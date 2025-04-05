@@ -1,5 +1,6 @@
 use flate2::read::GzDecoder;
-use reqwest::blocking::Client;
+use hyper::body::Bytes;
+use reqwest::Client;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
 use std::io::prelude::*;
@@ -53,20 +54,43 @@ pub struct Asns {
 }
 
 impl Asns {
-    pub fn new(url: &str) -> Result<Self, &'static str> {
-        info!("Loading the database");
-        let client = Client::new();
-        let Ok(res) = client.get(url).send() else {
-            error!("Unable to load the database");
-            return Err("Unable to load the database");
-        };
-        if !res.status().is_success() {
-            error!("Unable to load the database");
-            return Err("Unable to load the database");
-        }
-        let Ok(bytes) = res.bytes() else {
-            error!("Unable to read response body");
-            return Err("Unable to read response body");
+    pub async fn new(url: &str) -> Result<Self, &'static str> {
+        info!("Loading the database from {}", url);
+
+        let bytes = if url.starts_with("file://") {
+            // Handle local file URLs
+            let path = url.strip_prefix("file://").unwrap_or(url);
+            match tokio::fs::read(path).await {
+                Ok(content) => Bytes::from(content),
+                Err(e) => {
+                    error!("Unable to read local file: {}", e);
+                    return Err("Unable to read local file");
+                }
+            }
+        } else {
+            // Handle HTTP/HTTPS URLs
+            let client = Client::builder()
+                .user_agent("iptoasn-webservice/0.2.5")
+                .build()
+                .map_err(|_| {
+                    error!("Failed to create HTTP client");
+                    "Failed to create HTTP client"
+                })?;
+
+            let res = client.get(url).send().await.map_err(|e| {
+                error!("Unable to load the database: {}", e);
+                "Unable to load the database"
+            })?;
+
+            if !res.status().is_success() {
+                error!("Unable to load the database, status: {}", res.status());
+                return Err("Unable to load the database");
+            }
+
+            res.bytes().await.map_err(|e| {
+                error!("Unable to read response body: {}", e);
+                "Unable to read response body"
+            })?
         };
         let mut data = String::new();
         if GzDecoder::new(bytes.as_ref())

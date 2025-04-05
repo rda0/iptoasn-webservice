@@ -2,8 +2,6 @@
 extern crate horrorshow;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate router;
 
 mod asns;
 mod webservice;
@@ -12,58 +10,84 @@ use crate::asns::Asns;
 use crate::webservice::WebService;
 use clap::{Arg, Command};
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::Duration;
 
-fn get_asns(db_url: &str) -> Result<Asns, &'static str> {
-    info!("Retrieving ASNs");
-    let asns = Asns::new(db_url);
-    info!("ASNs loaded");
-    asns
-}
+#[tokio::main]
+async fn main() {
+    env_logger::init();
 
-fn update_asns(asns_arc: &Arc<RwLock<Arc<Asns>>>, db_url: &str) {
-    let asns = match get_asns(db_url) {
+    let matches = Command::new("iptoasn-webservice")
+        .version("0.2.5")
+        .author("Frank Denis <github@pureftpd.org>")
+        .about("IP to ASN webservice")
+        .arg(
+            Arg::new("listen_addr")
+                .short('l')
+                .long("listen")
+                .value_name("listen_addr")
+                .help("Address:port to listen to")
+                .default_value("127.0.0.1:53661"),
+        )
+        .arg(
+            Arg::new("db_url")
+                .short('u')
+                .long("url")
+                .value_name("db_url")
+                .help("URL of the database")
+                .default_value("file:///Users/j/src/iptoasn-webservice/test_data.tsv.gz"),
+        )
+        .arg(
+            Arg::new("refresh_delay")
+                .short('r')
+                .long("refresh")
+                .value_name("refresh_delay")
+                .help("Database refresh delay (minutes)")
+                .default_value("60"),
+        )
+        .get_matches();
+
+    let db_url = matches.get_one::<String>("db_url").unwrap();
+    let listen_addr = matches.get_one::<String>("listen_addr").unwrap();
+    let refresh_delay = matches.get_one::<String>("refresh_delay").unwrap();
+    let refresh_delay = refresh_delay.parse::<u64>().unwrap();
+
+    let asns = match get_asns(db_url).await {
         Ok(asns) => asns,
         Err(e) => {
             warn!("{e}");
             return;
         }
     };
-    *asns_arc.write().unwrap() = Arc::new(asns);
+    let asns_arc = Arc::new(RwLock::new(Arc::new(asns)));
+
+    let asns_arc_t = asns_arc.clone();
+    let db_url_t = db_url.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(refresh_delay * 60)).await;
+            update_asns(&asns_arc_t, &db_url_t).await;
+        }
+    });
+
+    WebService::start(asns_arc, listen_addr).await;
 }
 
-fn main() {
-    let matches = Command::new(env!("CARGO_PKG_NAME"))
-        .version(env!("CARGO_PKG_VERSION"))
-        .author(env!("CARGO_PKG_AUTHORS"))
-        .about(env!("CARGO_PKG_DESCRIPTION"))
-        .arg(
-            Arg::new("listen_addr")
-                .short('l')
-                .long("listen")
-                .value_name("ip:port")
-                .help("Webservice IP and port")
-                .default_value("0.0.0.0:53661"),
-        )
-        .arg(
-            Arg::new("db_url")
-                .short('u')
-                .long("dburl")
-                .value_name("url")
-                .help("URL of the gzipped database")
-                .default_value("https://iptoasn.com/data/ip2asn-combined.tsv.gz"),
-        )
-        .get_matches();
-    let db_url = matches.get_one::<String>("db_url").unwrap().to_owned();
-    let listen_addr = matches.get_one::<String>("listen_addr").unwrap().as_str();
-    let asns = get_asns(&db_url).expect("Unable to load the initial database");
-    let asns_arc = Arc::new(RwLock::new(Arc::new(asns)));
-    let asns_arc_copy = asns_arc.clone();
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(3600));
-        update_asns(&asns_arc_copy, &db_url);
-    });
-    info!("Starting the webservice");
-    WebService::start(asns_arc, listen_addr);
+async fn get_asns(db_url: &str) -> Result<Asns, &'static str> {
+    info!("Retrieving ASNs");
+    let asns = Asns::new(db_url).await?;
+    info!("ASNs loaded");
+    Ok(asns)
+}
+
+async fn update_asns(asns_arc: &Arc<RwLock<Arc<Asns>>>, db_url: &str) {
+    let asns = match get_asns(db_url).await {
+        Ok(asns) => asns,
+        Err(e) => {
+            warn!("{e}");
+            return;
+        }
+    };
+    let asns_arc_new = Arc::new(asns);
+    let mut asns_arc_w = asns_arc.write().unwrap();
+    *asns_arc_w = asns_arc_new;
 }
