@@ -11,7 +11,9 @@ use router::Router;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
-use time::{self, Duration};
+// Use the old time crate for iron compatibility
+extern crate time01 as time_old;
+// Import unicase for Vary headers
 use unicase::UniCase;
 
 const TTL: u32 = 86_400;
@@ -59,7 +61,7 @@ impl WebService {
                 CacheDirective::MaxAge(TTL),
             ])),
             Header(Expires(HttpDate(
-                time::now() + Duration::seconds(TTL.into()),
+                time_old::now() + time_old::Duration::seconds(TTL.into()),
             ))),
             "See https://iptoasn.com",
         )))
@@ -201,7 +203,7 @@ impl WebService {
                 CacheDirective::MaxAge(TTL),
             ])),
             Header(Expires(HttpDate(
-                time::now() + Duration::seconds(TTL.into()),
+                time_old::now() + time_old::Duration::seconds(TTL.into()),
             ))),
         );
         let vary_header = Header(Vary::Items(vec![

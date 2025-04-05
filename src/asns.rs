@@ -1,7 +1,5 @@
 use flate2::read::GzDecoder;
-use hyper::net::HttpsConnector;
-use hyper::{self, Client};
-use hyper_native_tls::NativeTlsClient;
+use reqwest::blocking::Client;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
 use std::io::prelude::*;
@@ -57,17 +55,33 @@ pub struct ASNs {
 impl ASNs {
     pub fn new(url: &str) -> Result<ASNs, &'static str> {
         info!("Loading the database");
-        let tls = NativeTlsClient::new().unwrap();
-        let connector = HttpsConnector::new(tls);
-        let client = Client::with_connector(connector);
-        let res = client.get(url).send().unwrap();
-        if res.status != hyper::Ok {
+        let client = Client::new();
+        let res = match client.get(url).send() {
+            Ok(res) => res,
+            Err(_) => {
+                error!("Unable to load the database");
+                return Err("Unable to load the database");
+            }
+        };
+        if !res.status().is_success() {
             error!("Unable to load the database");
             return Err("Unable to load the database");
         }
-        assert_eq!(res.status, hyper::Ok);
+        let bytes = match res.bytes() {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                error!("Unable to read response body");
+                return Err("Unable to read response body");
+            }
+        };
         let mut data = String::new();
-        GzDecoder::new(res).read_to_string(&mut data).unwrap();
+        match GzDecoder::new(bytes.as_ref()).read_to_string(&mut data) {
+            Ok(_) => {}
+            Err(_) => {
+                error!("Unable to decompress the database");
+                return Err("Unable to decompress the database");
+            }
+        };
         let mut asns = BTreeSet::new();
         for line in data.split_terminator('\n') {
             let mut parts = line.split('\t');

@@ -4,15 +4,13 @@ extern crate horrorshow;
 extern crate log;
 #[macro_use]
 extern crate router;
-#[macro_use]
-extern crate clap;
 
 mod asns;
 mod webservice;
 
 use crate::asns::*;
 use crate::webservice::*;
-use clap::Arg;
+use clap::{Arg, Command};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -36,14 +34,16 @@ fn update_asns(asns_arc: &Arc<RwLock<Arc<ASNs>>>, db_url: &str) {
 }
 
 fn main() {
-    let matches = app_from_crate!()
+    let matches = Command::new(env!("CARGO_PKG_NAME"))
+        .version(env!("CARGO_PKG_VERSION"))
+        .author(env!("CARGO_PKG_AUTHORS"))
+        .about(env!("CARGO_PKG_DESCRIPTION"))
         .arg(
             Arg::new("listen_addr")
                 .short('l')
                 .long("listen")
                 .value_name("ip:port")
                 .help("Webservice IP and port")
-                .takes_value(true)
                 .default_value("0.0.0.0:53661"),
         )
         .arg(
@@ -52,12 +52,11 @@ fn main() {
                 .long("dburl")
                 .value_name("url")
                 .help("URL of the gzipped database")
-                .takes_value(true)
                 .default_value("https://iptoasn.com/data/ip2asn-combined.tsv.gz"),
         )
         .get_matches();
-    let db_url = matches.value_of("db_url").unwrap().to_owned();
-    let listen_addr = matches.value_of("listen_addr").unwrap();
+    let db_url = matches.get_one::<String>("db_url").unwrap().to_owned();
+    let listen_addr = matches.get_one::<String>("listen_addr").unwrap().as_str();
     let asns = get_asns(&db_url).expect("Unable to load the initial database");
     let asns_arc = Arc::new(RwLock::new(Arc::new(asns)));
     let asns_arc_copy = asns_arc.clone();
