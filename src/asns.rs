@@ -8,7 +8,7 @@ use std::ops::Bound::{Included, Unbounded};
 use std::str::FromStr;
 
 #[derive(Debug)]
-pub struct ASN {
+pub struct Asn {
     pub first_ip: IpAddr,
     pub last_ip: IpAddr,
     pub number: u32,
@@ -16,29 +16,29 @@ pub struct ASN {
     pub description: String,
 }
 
-impl PartialEq for ASN {
-    fn eq(&self, other: &ASN) -> bool {
+impl PartialEq for Asn {
+    fn eq(&self, other: &Self) -> bool {
         self.first_ip == other.first_ip
     }
 }
 
-impl Eq for ASN {}
+impl Eq for Asn {}
 
-impl Ord for ASN {
+impl Ord for Asn {
     fn cmp(&self, other: &Self) -> Ordering {
         self.first_ip.cmp(&other.first_ip)
     }
 }
 
-impl PartialOrd for ASN {
-    fn partial_cmp(&self, other: &ASN) -> Option<Ordering> {
+impl PartialOrd for Asn {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl ASN {
-    fn from_single_ip(ip: IpAddr) -> ASN {
-        ASN {
+impl Asn {
+    const fn from_single_ip(ip: IpAddr) -> Self {
+        Self {
             first_ip: ip,
             last_ip: ip,
             number: 0,
@@ -48,40 +48,34 @@ impl ASN {
     }
 }
 
-pub struct ASNs {
-    asns: BTreeSet<ASN>,
+pub struct Asns {
+    asns: BTreeSet<Asn>,
 }
 
-impl ASNs {
-    pub fn new(url: &str) -> Result<ASNs, &'static str> {
+impl Asns {
+    pub fn new(url: &str) -> Result<Self, &'static str> {
         info!("Loading the database");
         let client = Client::new();
-        let res = match client.get(url).send() {
-            Ok(res) => res,
-            Err(_) => {
-                error!("Unable to load the database");
-                return Err("Unable to load the database");
-            }
+        let Ok(res) = client.get(url).send() else {
+            error!("Unable to load the database");
+            return Err("Unable to load the database");
         };
         if !res.status().is_success() {
             error!("Unable to load the database");
             return Err("Unable to load the database");
         }
-        let bytes = match res.bytes() {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                error!("Unable to read response body");
-                return Err("Unable to read response body");
-            }
+        let Ok(bytes) = res.bytes() else {
+            error!("Unable to read response body");
+            return Err("Unable to read response body");
         };
         let mut data = String::new();
-        match GzDecoder::new(bytes.as_ref()).read_to_string(&mut data) {
-            Ok(_) => {}
-            Err(_) => {
-                error!("Unable to decompress the database");
-                return Err("Unable to decompress the database");
-            }
-        };
+        if GzDecoder::new(bytes.as_ref())
+            .read_to_string(&mut data)
+            .is_err()
+        {
+            error!("Unable to decompress the database");
+            return Err("Unable to decompress the database");
+        }
         let mut asns = BTreeSet::new();
         for line in data.split_terminator('\n') {
             let mut parts = line.split('\t');
@@ -90,7 +84,7 @@ impl ASNs {
             let number = u32::from_str(parts.next().unwrap()).unwrap();
             let country = parts.next().unwrap().to_owned();
             let description = parts.next().unwrap().to_owned();
-            let asn = ASN {
+            let asn = Asn {
                 first_ip,
                 last_ip,
                 number,
@@ -100,11 +94,11 @@ impl ASNs {
             asns.insert(asn);
         }
         info!("Database loaded");
-        Ok(ASNs { asns })
+        Ok(Self { asns })
     }
 
-    pub fn lookup_by_ip(&self, ip: IpAddr) -> Option<&ASN> {
-        let fasn = ASN::from_single_ip(ip);
+    pub fn lookup_by_ip(&self, ip: IpAddr) -> Option<&Asn> {
+        let fasn = Asn::from_single_ip(ip);
         match self.asns.range((Unbounded, Included(&fasn))).next_back() {
             Some(found) if ip <= found.last_ip && found.number > 0 => Some(found),
             _ => None,

@@ -8,25 +8,25 @@ extern crate router;
 mod asns;
 mod webservice;
 
-use crate::asns::*;
-use crate::webservice::*;
+use crate::asns::Asns;
+use crate::webservice::WebService;
 use clap::{Arg, Command};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
-fn get_asns(db_url: &str) -> Result<ASNs, &'static str> {
+fn get_asns(db_url: &str) -> Result<Asns, &'static str> {
     info!("Retrieving ASNs");
-    let asns = ASNs::new(db_url);
+    let asns = Asns::new(db_url);
     info!("ASNs loaded");
     asns
 }
 
-fn update_asns(asns_arc: &Arc<RwLock<Arc<ASNs>>>, db_url: &str) {
+fn update_asns(asns_arc: &Arc<RwLock<Arc<Asns>>>, db_url: &str) {
     let asns = match get_asns(db_url) {
         Ok(asns) => asns,
         Err(e) => {
-            warn!("{}", e);
+            warn!("{e}");
             return;
         }
     };
