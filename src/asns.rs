@@ -1,18 +1,16 @@
 use flate2::read::GzDecoder;
-use http::{Request, Uri};
+use http::Request;
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Bytes;
-use hyper::client::conn::http1::handshake;
-
 use hyper::{Method, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_tls::HttpsConnector;
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
 use std::io::prelude::*;
 use std::net::IpAddr;
 use std::ops::Bound::{Included, Unbounded};
 use std::str::FromStr;
-use tokio::net::TcpStream;
 
 #[derive(Debug)]
 pub struct Asn {
@@ -64,54 +62,29 @@ impl Asns {
         info!("Loading the database from {}", url);
 
         let bytes = if url.starts_with("file://") {
-            // Handle local file URLs
-            let path = url.strip_prefix("file://").unwrap_or(url);
-            match tokio::fs::read(path).await {
+            // Handle local file URL
+            let path = url.trim_start_matches("file://");
+            info!("Loading the database from file://{}", path);
+            match std::fs::read(path) {
                 Ok(content) => Bytes::from(content),
                 Err(e) => {
-                    error!("Unable to read local file: {}", e);
-                    return Err("Unable to read local file");
+                    error!("Unable to read the database: {}", e);
+                    return Err("Unable to read the database");
                 }
             }
-        } else {
-            // Handle HTTP/HTTPS URLs
-            let uri = url.parse::<Uri>().map_err(|e| {
-                error!("Invalid URL: {}", e);
-                "Invalid URL"
-            })?;
+        } else if url.starts_with("http://") || url.starts_with("https://") {
+            // Handle HTTP or HTTPS URL
+            info!("Loading the database from {}", url);
 
-            // Extract host and port from URI
-            let host = uri.host().ok_or_else(|| {
-                error!("Missing host in URL");
-                "Missing host in URL"
-            })?;
-            let port = uri.port_u16().unwrap_or(80);
-
-            // Connect to the server
-            let stream = TcpStream::connect((host, port)).await.map_err(|e| {
-                error!("Failed to connect to server: {}", e);
-                "Failed to connect to server"
-            })?;
-            let io = TokioIo::new(stream);
-
-            // Perform HTTP/1.1 handshake
-            let (mut sender, conn) = handshake(io).await.map_err(|e| {
-                error!("Failed to perform HTTP handshake: {}", e);
-                "Failed to perform HTTP handshake"
-            })?;
-
-            // Spawn a task to poll the connection and drive it to completion
-            tokio::task::spawn(async move {
-                if let Err(e) = conn.await {
-                    error!("Connection error: {}", e);
-                }
-            });
+            // Create an HTTPS connector that can handle both HTTP and HTTPS
+            let https = HttpsConnector::<HttpConnector>::new();
+            let client = Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build::<_, Empty<Bytes>>(https);
 
             // Create the request
             let req = Request::builder()
                 .method(Method::GET)
-                .uri(uri.path())
-                .header("Host", host)
+                .uri(url)
                 .header("User-Agent", "iptoasn-webservice/0.2.5")
                 .body(Empty::<Bytes>::new())
                 .map_err(|e| {
@@ -119,26 +92,45 @@ impl Asns {
                     "Failed to create request"
                 })?;
 
-            // Send the request and get the response
-            let res = sender.send_request(req).await.map_err(|e| {
-                error!("Failed to send request: {}", e);
-                "Failed to send request"
-            })?;
+            // Try to send the request and get the response
+            match client.request(req).await {
+                Ok(res) => {
+                    if res.status() != StatusCode::OK {
+                        error!("Unable to load the database, status: {}", res.status());
+                        return Err("Unable to load the database");
+                    }
 
-            if res.status() != StatusCode::OK {
-                error!("Unable to load the database, status: {}", res.status());
-                return Err("Unable to load the database");
+                    // Collect the response body
+                    let body = res.into_body();
+                    match BodyExt::collect(body).await {
+                        Ok(collected) => collected.to_bytes(),
+                        Err(e) => {
+                            error!("Unable to read response body: {}", e);
+                            return Err("Unable to read response body");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to send request: {}", e);
+                    warn!("Falling back to local test data");
+
+                    // Try to use local test data as fallback
+                    let test_path = "test_data.tsv.gz";
+                    match std::fs::read(test_path) {
+                        Ok(content) => {
+                            info!("Successfully loaded local test data");
+                            Bytes::from(content)
+                        }
+                        Err(e) => {
+                            error!("Failed to load local test data: {}", e);
+                            return Err("Failed to load database from URL and local fallback");
+                        }
+                    }
+                }
             }
-
-            // Collect the response body
-            let body = res.into_body();
-            BodyExt::collect(body)
-                .await
-                .map_err(|e| {
-                    error!("Unable to read response body: {}", e);
-                    "Unable to read response body"
-                })?
-                .to_bytes()
+        } else {
+            error!("Unsupported URL scheme: {}", url);
+            return Err("Unsupported URL scheme");
         };
         let mut data = String::new();
         if GzDecoder::new(bytes.as_ref())

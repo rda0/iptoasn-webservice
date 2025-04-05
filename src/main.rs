@@ -34,7 +34,7 @@ async fn main() {
                 .long("url")
                 .value_name("db_url")
                 .help("URL of the database")
-                .default_value("file:///Users/j/src/iptoasn-webservice/test_data.tsv.gz"),
+                .default_value("https://iptoasn.com/data/ip2asn-combined.tsv.gz"),
         )
         .arg(
             Arg::new("refresh_delay")
