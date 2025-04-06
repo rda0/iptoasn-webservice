@@ -3,8 +3,8 @@ use http::Request;
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Bytes;
 use hyper::{Method, StatusCode};
-use hyper_tls::HttpsConnector;
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::client::legacy::Client;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
 use std::io::prelude::*;
@@ -76,8 +76,13 @@ impl Asns {
             // Handle HTTP or HTTPS URL
             info!("Loading the database from {}", url);
 
-            // Create an HTTPS connector that can handle both HTTP and HTTPS
-            let https = HttpsConnector::<HttpConnector>::new();
+            // Create an HTTPS connector that can handle both HTTP and HTTPS with TLS 1.3 support
+            let https = HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("Failed to load native roots")
+                .https_or_http()
+                .enable_http1()
+                .build();
             let client = Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build::<_, Empty<Bytes>>(https);
 
