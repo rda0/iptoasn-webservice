@@ -5,6 +5,7 @@ use hyper::body::Bytes;
 use hyper::{Method, StatusCode};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
 use std::io::prelude::*;
@@ -76,15 +77,17 @@ impl Asns {
             // Handle HTTP or HTTPS URL
             info!("Loading the database from {}", url);
 
-            // Create an HTTPS connector that can handle both HTTP and HTTPS with TLS 1.3 support
+            // Create an HTTPS connector with TLS 1.3 support
             let https = HttpsConnectorBuilder::new()
                 .with_native_roots()
                 .expect("Failed to load native roots")
                 .https_or_http()
                 .enable_http1()
+                .enable_http2() // Enable HTTP/2 for better performance
                 .build();
-            let client = Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build::<_, Empty<Bytes>>(https);
+
+            // Create a client with the HTTPS connector
+            let client = Client::builder(TokioExecutor::new()).build::<_, Empty<Bytes>>(https);
 
             // Create the request
             let req = Request::builder()
@@ -97,7 +100,7 @@ impl Asns {
                     "Failed to create request"
                 })?;
 
-            // Try to send the request and get the response
+            // Send the request and get the response
             match client.request(req).await {
                 Ok(res) => {
                     if res.status() != StatusCode::OK {
