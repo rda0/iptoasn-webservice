@@ -105,7 +105,28 @@ impl Asns {
                 Ok(res) => {
                     if res.status() != StatusCode::OK {
                         error!("Unable to load the database, status: {}", res.status());
-                        return Err("Unable to load the database");
+                        warn!("HTTP request failed, attempting to use cached data");
+
+                        // Try fallback sources on HTTP errors too
+                        let fallback_paths = [
+                            "cache/ip2asn-combined.tsv.gz",
+                            "ip2asn-combined.tsv.gz",
+                            "test_data.tsv.gz",
+                        ];
+
+                        for path in &fallback_paths {
+                            match std::fs::read(path) {
+                                Ok(content) => {
+                                    info!("Successfully loaded fallback data from: {}", path);
+                                    return Self::parse_data(Bytes::from(content));
+                                }
+                                Err(_) => {
+                                    debug!("Fallback file not found: {}", path);
+                                }
+                            }
+                        }
+
+                        return Err("Unable to load the database and no fallback data available");
                     }
 
                     // Collect the response body
@@ -120,26 +141,59 @@ impl Asns {
                 }
                 Err(e) => {
                     error!("Failed to send request: {}", e);
-                    warn!("Falling back to local test data");
+                    warn!("Network request failed, attempting to use cached data");
 
-                    // Try to use local test data as fallback
-                    let test_path = "test_data.tsv.gz";
-                    match std::fs::read(test_path) {
-                        Ok(content) => {
-                            info!("Successfully loaded local test data");
-                            Bytes::from(content)
-                        }
-                        Err(e) => {
-                            error!("Failed to load local test data: {}", e);
-                            return Err("Failed to load database from URL and local fallback");
+                    // Try multiple fallback sources in order of preference
+                    let fallback_paths = [
+                        "cache/ip2asn-combined.tsv.gz", // Primary cache location
+                        "ip2asn-combined.tsv.gz",       // Local copy
+                        "test_data.tsv.gz",             // Test data fallback
+                    ];
+
+                    for path in &fallback_paths {
+                        match std::fs::read(path) {
+                            Ok(content) => {
+                                info!("Successfully loaded fallback data from: {}", path);
+                                return Self::parse_data(Bytes::from(content));
+                            }
+                            Err(_) => {
+                                debug!("Fallback file not found: {}", path);
+                            }
                         }
                     }
+
+                    error!("No fallback data sources available");
+                    return Err("Failed to load database from URL and all fallback sources");
                 }
             }
         } else {
             error!("Unsupported URL scheme: {}", url);
             return Err("Unsupported URL scheme");
         };
+
+        // Save successful download to cache
+        if url.starts_with("http://") || url.starts_with("https://") {
+            Self::save_to_cache(&bytes);
+        }
+
+        Self::parse_data(bytes)
+    }
+
+    fn save_to_cache(bytes: &Bytes) {
+        // Create cache directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all("cache") {
+            warn!("Failed to create cache directory: {}", e);
+            return;
+        }
+
+        // Save the downloaded data to cache
+        match std::fs::write("cache/ip2asn-combined.tsv.gz", bytes) {
+            Ok(()) => info!("Successfully cached database to cache/ip2asn-combined.tsv.gz"),
+            Err(e) => warn!("Failed to cache database: {}", e),
+        }
+    }
+
+    fn parse_data(bytes: Bytes) -> Result<Self, &'static str> {
         let mut data = String::new();
         if GzDecoder::new(bytes.as_ref())
             .read_to_string(&mut data)
@@ -150,12 +204,33 @@ impl Asns {
         }
         let mut asns = BTreeSet::new();
         for line in data.split_terminator('\n') {
+            if line.trim().is_empty() {
+                continue;
+            }
             let mut parts = line.split('\t');
-            let first_ip = IpAddr::from_str(parts.next().unwrap()).unwrap();
-            let last_ip = IpAddr::from_str(parts.next().unwrap()).unwrap();
-            let number = u32::from_str(parts.next().unwrap()).unwrap();
-            let country = parts.next().unwrap().to_owned();
-            let description = parts.next().unwrap().to_owned();
+            let first_ip = match parts.next().and_then(|s| IpAddr::from_str(s).ok()) {
+                Some(ip) => ip,
+                None => {
+                    warn!("Invalid IP address in line: {}", line);
+                    continue;
+                }
+            };
+            let last_ip = match parts.next().and_then(|s| IpAddr::from_str(s).ok()) {
+                Some(ip) => ip,
+                None => {
+                    warn!("Invalid IP address in line: {}", line);
+                    continue;
+                }
+            };
+            let number = match parts.next().and_then(|s| u32::from_str(s).ok()) {
+                Some(num) => num,
+                None => {
+                    warn!("Invalid ASN number in line: {}", line);
+                    continue;
+                }
+            };
+            let country = parts.next().unwrap_or("").to_owned();
+            let description = parts.next().unwrap_or("").to_owned();
             let asn = Asn {
                 first_ip,
                 last_ip,
@@ -165,7 +240,7 @@ impl Asns {
             };
             asns.insert(asn);
         }
-        info!("Database loaded");
+        info!("Database loaded with {} entries", asns.len());
         Ok(Self { asns })
     }
 

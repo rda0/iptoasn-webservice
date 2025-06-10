@@ -1,3 +1,6 @@
 *~
 Cargo.lock
 /target/
+/cache/
+*.tsv
+*.tsv.gz

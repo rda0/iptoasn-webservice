@@ -41,7 +41,7 @@ async fn main() {
                 .short('r')
                 .long("refresh")
                 .value_name("refresh_delay")
-                .help("Database refresh delay (minutes)")
+                .help("Database refresh delay (minutes, 0 to disable)")
                 .default_value("60"),
         )
         .get_matches();
@@ -54,20 +54,30 @@ async fn main() {
     let asns = match get_asns(db_url).await {
         Ok(asns) => asns,
         Err(e) => {
-            warn!("{e}");
+            error!("Failed to load initial database: {e}");
+            error!("Application cannot start without initial data");
             return;
         }
     };
     let asns_arc = Arc::new(RwLock::new(Arc::new(asns)));
 
-    let asns_arc_t = asns_arc.clone();
-    let db_url_t = db_url.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(refresh_delay * 60)).await;
-            update_asns(&asns_arc_t, &db_url_t).await;
-        }
-    });
+    // Only start the refresh task if refresh_delay > 0
+    if refresh_delay > 0 {
+        let asns_arc_t = asns_arc.clone();
+        let db_url_t = db_url.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(refresh_delay * 60)).await;
+                update_asns(&asns_arc_t, &db_url_t).await;
+            }
+        });
+        info!(
+            "Automatic database refresh enabled (every {} minutes)",
+            refresh_delay
+        );
+    } else {
+        info!("Automatic database refresh disabled");
+    }
 
     WebService::start(asns_arc, listen_addr).await;
 }
@@ -80,14 +90,17 @@ async fn get_asns(db_url: &str) -> Result<Asns, &'static str> {
 }
 
 async fn update_asns(asns_arc: &Arc<RwLock<Arc<Asns>>>, db_url: &str) {
+    info!("Attempting to update ASN database");
     let asns = match get_asns(db_url).await {
         Ok(asns) => asns,
         Err(e) => {
-            warn!("{e}");
+            warn!("Failed to update ASN database: {e}");
+            warn!("Continuing with existing data");
             return;
         }
     };
     let asns_arc_new = Arc::new(asns);
     let mut asns_arc_w = asns_arc.write().unwrap();
     *asns_arc_w = asns_arc_new;
+    info!("ASN database successfully updated");
 }
