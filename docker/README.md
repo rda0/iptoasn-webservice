@@ -1,36 +1,106 @@
-# How to use
+# IP to ASN Web Service - Docker Guide
 
-Assume you are in the repo's root folder:
+This guide explains how to build and run the IP to ASN web service using Docker.
 
-```sh
+## Quick Start
+
+Build and run the service from the repository root directory:
+
+```bash
+# Build the Docker image
 docker build -t iptoasn -f docker/Dockerfile .
+
+# Run the container
 docker run -itd \
            --name my-iptoasn \
-           -p 80:53661 \
+           -p 8080:53661 \
            iptoasn
 ```
 
-Wait while iptoasn is downloading data, and then you can do `curl` requests as you used to:
+The service will start downloading the ASN database on first run. Once ready, you can query it:
 
-```sh
-curl 127.0.0.1:80/v1/as/ip/8.8.8.8
+```bash
+curl http://localhost:8080/v1/as/ip/8.8.8.8
 ```
 
-## Setting service parameters
+## Configuration
 
-Listen port and database URL can be specified by environment variables:
+### Environment Variables
 
-```sh
+The service can be configured using environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `IPTOASN_PORT` | Port to listen on | `53661` |
+| `IPTOASN_DBURL` | URL to download ASN database from | Default database URL |
+
+### Custom Configuration Example
+
+```bash
 docker run -itd \
            --name my-iptoasn \
            -e IPTOASN_PORT=10000 \
-           -e IPTOASN_DBURL='http://your-database-url.com' \
-           -p 80:10000 \
+           -e IPTOASN_DBURL='https://your-database-url.com/data.tsv.gz' \
+           -p 8080:10000 \
            iptoasn
 ```
 
-## Use as a binary
+## API Usage
 
-```sh
-docker run -it --rm iptoasn --help
+Once the service is running, you can query IP addresses:
+
+```bash
+# Query a single IP
+curl http://localhost:8080/v1/as/ip/8.8.8.8
+
+# Query with JSON response
+curl -H "Accept: application/json" http://localhost:8080/v1/as/ip/1.1.1.1
 ```
+
+## Command Line Usage
+
+You can also use the container as a command-line tool:
+
+```bash
+# Show help
+docker run -it --rm iptoasn --help
+
+# Run with custom parameters
+docker run -it --rm iptoasn --port 8080 --database-url https://example.com/data.tsv.gz
+```
+
+## Container Management
+
+```bash
+# Check logs
+docker logs my-iptoasn
+
+# Stop the container
+docker stop my-iptoasn
+
+# Remove the container
+docker rm my-iptoasn
+
+# Remove the image
+docker rmi iptoasn
+```
+
+## Health Check
+
+The service exposes a health endpoint that can be used for monitoring:
+
+```bash
+curl http://localhost:8080/health
+```
+
+## Troubleshooting
+
+- **Container exits immediately**: Check logs with `docker logs my-iptoasn`
+- **Service not responding**: Ensure the database download has completed
+- **Port conflicts**: Change the host port mapping (e.g., `-p 9090:53661`)
+
+## Security Notes
+
+- The container runs as a non-root user (`app`) for security
+- Only necessary packages are installed to minimize attack surface
+- The final image is optimized and stripped of build dependencies
