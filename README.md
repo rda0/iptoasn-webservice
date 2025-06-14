@@ -36,14 +36,14 @@ cargo build --release
 # Custom configuration
 ./target/release/iptoasn-webservice \
   --listen 0.0.0.0:8080 \
-  --url https://iptoasn.com/data/ip2asn-combined.tsv.gz \
+  --dburl https://iptoasn.com/data/ip2asn-combined.tsv.gz \
   --refresh 120
 ```
 
 ### Command line options
 
 - `--listen` (`-l`): Address and port to bind to (default: `127.0.0.1:53661`)
-- `--url` (`-u`): Database URL to download from (default: `https://iptoasn.com/data/ip2asn-combined.tsv.gz`)
+- `--dburl` (`-u`): Database URL to download from (default: `https://iptoasn.com/data/ip2asn-combined.tsv.gz`)
 - `--refresh` (`-r`): Database refresh interval in minutes, 0 to disable (default: `60`)
 
 ## API Usage

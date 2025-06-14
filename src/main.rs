@@ -31,7 +31,7 @@ async fn main() {
         .arg(
             Arg::new("db_url")
                 .short('u')
-                .long("url")
+                .long("dburl")
                 .value_name("db_url")
                 .help("URL of the database")
                 .default_value("https://iptoasn.com/data/ip2asn-combined.tsv.gz"),

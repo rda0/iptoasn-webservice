@@ -66,7 +66,7 @@ You can also use the container as a command-line tool:
 docker run -it --rm iptoasn --help
 
 # Run with custom parameters
-docker run -it --rm iptoasn --port 8080 --database-url https://example.com/data.tsv.gz
+docker run -it --rm iptoasn --listen 0.0.0.0:8080 --dburl https://example.com/data.tsv.gz
 ```
 
 ## Container Management
