@@ -3,7 +3,7 @@
 DEFAULT_PORT='53661'
 DEFAULT_DBURL='https://iptoasn.com/data/ip2asn-combined.tsv.gz'
 
-if [ $IPTOASN_PORT ] || [ $IPTOASN_DBURL]; then
+if [ $IPTOASN_PORT ] || [ $IPTOASN_DBURL ]; then
   if ! [ $IPTOASN_PORT ]; then
     IPTOASN_PORT=$DEFAULT_PORT
   fi
