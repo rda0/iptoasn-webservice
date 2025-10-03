@@ -49,7 +49,14 @@ async fn main() {
     let db_url = matches.get_one::<String>("db_url").unwrap();
     let listen_addr = matches.get_one::<String>("listen_addr").unwrap();
     let refresh_delay = matches.get_one::<String>("refresh_delay").unwrap();
-    let refresh_delay = refresh_delay.parse::<u64>().unwrap();
+    let refresh_delay = match refresh_delay.parse::<u64>() {
+        Ok(delay) => delay,
+        Err(_) => {
+            error!("Invalid refresh delay value: {}", refresh_delay);
+            error!("Refresh delay must be a valid number");
+            return;
+        }
+    };
 
     let asns = match get_asns(db_url).await {
         Ok(asns) => asns,

@@ -143,7 +143,7 @@ impl WebService {
         let html = html! {
             head {
                 title : "iptoasn lookup";
-                meta(name="viewport", content="width=device-widthinitial-scale=1");
+                meta(name="viewport", content="width=device-width, initial-scale=1");
                 link(rel="stylesheet", href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-alpha.5/css/bootstrap.min.css", integrity="sha384-AysaV+vQoT3kOAXZkl02PThvDr8HYKPZhNT5h/CXfBThSRXQ6jW5DO2ekP5ViFdi", crossorigin="anonymous");
                 style : "body { margin: 1em 4em }";
             }
@@ -264,12 +264,24 @@ impl WebService {
 
     pub async fn start(asns_arc: Arc<RwLock<Arc<Asns>>>, listen_addr: &str) {
         let addr: SocketAddr = listen_addr.parse().expect("Could not parse socket address");
-        let listener = TcpListener::bind(addr).await.unwrap();
+        let listener = match TcpListener::bind(addr).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                log::error!("Failed to bind to {}: {}", addr, e);
+                return;
+            }
+        };
 
-        log::warn!("webservice ready");
+        log::info!("webservice ready");
 
         loop {
-            let (tcp, remote_addr) = listener.accept().await.unwrap();
+            let (tcp, remote_addr) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    log::error!("Failed to accept connection: {}", e);
+                    continue;
+                }
+            };
             let io = TokioIo::new(tcp);
             let asns_arc = asns_arc.clone();
 
