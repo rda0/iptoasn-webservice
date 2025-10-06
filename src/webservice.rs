@@ -45,12 +45,17 @@ impl WebService {
     async fn handle_request(
         req: Request<hyper::body::Incoming>,
         asns_arc: Arc<RwLock<Arc<Asns>>>,
+        remote_addr: SocketAddr,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         let method = req.method();
         let uri = req.uri().path();
 
         match (method, uri) {
             (&Method::GET, "/") => Ok(Self::index()),
+            (&Method::GET, "/v1/as/ip") => {
+                let client_ip = Self::extract_client_ip(req.headers(), remote_addr);
+                Self::ip_lookup(&client_ip, req.headers(), asns_arc)
+            }
             (&Method::GET, path) if path.starts_with("/v1/as/ip/") => {
                 let ip_s = path.strip_prefix("/v1/as/ip/").unwrap_or("");
                 Self::ip_lookup(ip_s, req.headers(), asns_arc)
@@ -71,6 +76,25 @@ impl WebService {
         );
         *response.status_mut() = StatusCode::OK;
         response
+    }
+
+    fn extract_client_ip(headers: &HeaderMap, remote_addr: SocketAddr) -> String {
+        if let Some(real_ip) = headers.get("x-real-ip") {
+            if let Ok(ip_str) = real_ip.to_str() {
+                return ip_str.to_string();
+            }
+        }
+
+        if let Some(forwarded_for) = headers.get("x-forwarded-for") {
+            if let Ok(ip_str) = forwarded_for.to_str() {
+                let first_ip = ip_str.split(',').next().unwrap_or("").trim();
+                if !first_ip.is_empty() {
+                    return first_ip.to_string();
+                }
+            }
+        }
+
+        remote_addr.ip().to_string()
     }
 
     fn accept_type(headers: &HeaderMap) -> OutputType {
@@ -119,7 +143,7 @@ impl WebService {
         let html = html! {
             head {
                 title : "iptoasn lookup";
-                meta(name="viewport", content="width=device-widthinitial-scale=1");
+                meta(name="viewport", content="width=device-width, initial-scale=1");
                 link(rel="stylesheet", href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-alpha.5/css/bootstrap.min.css", integrity="sha384-AysaV+vQoT3kOAXZkl02PThvDr8HYKPZhNT5h/CXfBThSRXQ6jW5DO2ekP5ViFdi", crossorigin="anonymous");
                 style : "body { margin: 1em 4em }";
             }
@@ -240,19 +264,31 @@ impl WebService {
 
     pub async fn start(asns_arc: Arc<RwLock<Arc<Asns>>>, listen_addr: &str) {
         let addr: SocketAddr = listen_addr.parse().expect("Could not parse socket address");
-        let listener = TcpListener::bind(addr).await.unwrap();
+        let listener = match TcpListener::bind(addr).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                log::error!("Failed to bind to {}: {}", addr, e);
+                return;
+            }
+        };
 
-        log::warn!("webservice ready");
+        log::info!("webservice ready");
 
         loop {
-            let (tcp, _) = listener.accept().await.unwrap();
+            let (tcp, remote_addr) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    log::error!("Failed to accept connection: {}", e);
+                    continue;
+                }
+            };
             let io = TokioIo::new(tcp);
             let asns_arc = asns_arc.clone();
 
             tokio::task::spawn(async move {
                 let service = service_fn(move |req| {
                     let asns_arc = asns_arc.clone();
-                    async move { Self::handle_request(req, asns_arc).await }
+                    async move { Self::handle_request(req, asns_arc, remote_addr).await }
                 });
 
                 if let Err(err) = http1::Builder::new().serve_connection(io, service).await {

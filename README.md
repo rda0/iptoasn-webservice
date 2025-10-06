@@ -48,6 +48,13 @@ cargo build --release
 
 ## API Usage
 
+### Routes
+
+- `/v1/as/ip/<ip address>`
+  - Lookup provided IP address
+- `/v1/as/ip`
+  - Lookup requester's IP address, prioritized as X-Real-IP > X-Forwarded-For > Request IP
+
 ### JSON Response
 
 ```sh
