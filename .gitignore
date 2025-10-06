@@ -4,5 +4,5 @@ Cargo.lock
 /cache/
 *.tsv
 *.tsv.gz
-.gitignore
+.vscode
 .zig-cache
