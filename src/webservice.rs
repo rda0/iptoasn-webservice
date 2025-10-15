@@ -23,7 +23,7 @@ enum OutputType {
     Html,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct IpLookupResponse {
     ip: String,
     announced: bool,
@@ -39,19 +39,6 @@ struct IpLookupResponse {
     as_description: Option<String>,
 }
 
-impl Default for IpLookupResponse {
-    fn default() -> Self {
-        Self {
-            ip: String::new(),
-            announced: false,
-            first_ip: None,
-            last_ip: None,
-            as_number: None,
-            as_country_code: None,
-            as_description: None,
-        }
-    }
-}
 
 impl IpLookupResponse {
     fn not_found(ip: String) -> Self {
