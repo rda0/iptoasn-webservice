@@ -4,6 +4,11 @@ extern crate horrorshow;
 mod asns;
 mod webservice;
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use crate::asns::Asns;
 use crate::webservice::WebService;
 use clap::{Arg, Command};
