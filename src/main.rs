@@ -1,7 +1,5 @@
 #[macro_use]
 extern crate horrorshow;
-#[macro_use]
-extern crate log;
 
 mod asns;
 mod webservice;
@@ -9,6 +7,7 @@ mod webservice;
 use crate::asns::Asns;
 use crate::webservice::WebService;
 use clap::{Arg, Command};
+use log::{error, info, warn};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -17,7 +16,7 @@ async fn main() {
     env_logger::init();
 
     let matches = Command::new("iptoasn-webservice")
-        .version("0.2.5")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Frank Denis <github@pureftpd.org>")
         .about("IP to ASN webservice")
         .arg(
@@ -42,21 +41,14 @@ async fn main() {
                 .long("refresh")
                 .value_name("refresh_delay")
                 .help("Database refresh delay (minutes, 0 to disable)")
-                .default_value("60"),
+                .default_value("60")
+                .value_parser(clap::value_parser!(u64)),
         )
         .get_matches();
 
     let db_url = matches.get_one::<String>("db_url").unwrap();
     let listen_addr = matches.get_one::<String>("listen_addr").unwrap();
-    let refresh_delay = matches.get_one::<String>("refresh_delay").unwrap();
-    let refresh_delay = match refresh_delay.parse::<u64>() {
-        Ok(delay) => delay,
-        Err(_) => {
-            error!("Invalid refresh delay value: {}", refresh_delay);
-            error!("Refresh delay must be a valid number");
-            return;
-        }
-    };
+    let refresh_delay = *matches.get_one::<u64>("refresh_delay").unwrap();
 
     // Create HTTP client once if URL is HTTP/HTTPS
     let http_client = if db_url.starts_with("http://") || db_url.starts_with("https://") {

@@ -39,6 +39,29 @@ struct IpLookupResponse {
     as_description: Option<String>,
 }
 
+impl Default for IpLookupResponse {
+    fn default() -> Self {
+        Self {
+            ip: String::new(),
+            announced: false,
+            first_ip: None,
+            last_ip: None,
+            as_number: None,
+            as_country_code: None,
+            as_description: None,
+        }
+    }
+}
+
+impl IpLookupResponse {
+    fn not_found(ip: String) -> Self {
+        Self {
+            ip,
+            ..Default::default()
+        }
+    }
+}
+
 pub struct WebService;
 
 impl WebService {
@@ -79,18 +102,18 @@ impl WebService {
     }
 
     fn extract_client_ip(headers: &HeaderMap, remote_addr: SocketAddr) -> String {
-        if let Some(real_ip) = headers.get("x-real-ip") {
-            if let Ok(ip_str) = real_ip.to_str() {
-                return ip_str.to_string();
-            }
+        if let Some(ip_str) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            return ip_str.to_string();
         }
 
-        if let Some(forwarded_for) = headers.get("x-forwarded-for") {
-            if let Ok(ip_str) = forwarded_for.to_str() {
-                let first_ip = ip_str.split(',').next().unwrap_or("").trim();
-                if !first_ip.is_empty() {
-                    return first_ip.to_string();
-                }
+        if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first_ip) = forwarded
+                .split(',')
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return first_ip.to_string();
             }
         }
 
@@ -217,15 +240,7 @@ impl WebService {
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         let ip = match std::net::IpAddr::from_str(ip_s) {
             Err(_) => {
-                let response = IpLookupResponse {
-                    ip: ip_s.to_owned(),
-                    announced: false,
-                    first_ip: None,
-                    last_ip: None,
-                    as_number: None,
-                    as_country_code: None,
-                    as_description: None,
-                };
+                let response = IpLookupResponse::not_found(ip_s.to_owned());
                 return Ok(Self::output(&Self::accept_type(headers), &response));
             }
             Ok(ip) => ip,
@@ -235,15 +250,7 @@ impl WebService {
 
         let found = match asns.lookup_by_ip(ip) {
             None => {
-                let response = IpLookupResponse {
-                    ip: ip.to_string(),
-                    announced: false,
-                    first_ip: None,
-                    last_ip: None,
-                    as_number: None,
-                    as_country_code: None,
-                    as_description: None,
-                };
+                let response = IpLookupResponse::not_found(ip.to_string());
                 return Ok(Self::output(&Self::accept_type(headers), &response));
             }
             Some(found) => found,

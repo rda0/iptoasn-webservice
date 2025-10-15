@@ -1,4 +1,5 @@
 use flate2::read::GzDecoder;
+use log::{debug, error, info, warn};
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
 use std::io::prelude::*;
@@ -52,6 +53,25 @@ pub struct Asns {
 }
 
 impl Asns {
+    fn try_load_fallback() -> Result<Vec<u8>, &'static str> {
+        let fallback_paths = [
+            "cache/ip2asn-combined.tsv.gz",
+            "ip2asn-combined.tsv.gz",
+            "test_data.tsv.gz",
+        ];
+
+        for path in &fallback_paths {
+            if let Ok(content) = std::fs::read(path) {
+                info!("Successfully loaded fallback data from: {}", path);
+                return Ok(content);
+            } else {
+                debug!("Fallback file not found: {}", path);
+            }
+        }
+
+        Err("No fallback data sources available")
+    }
+
     pub async fn new(
         url: &str,
         http_client: Option<&reqwest::Client>,
@@ -85,7 +105,10 @@ impl Asns {
             // Send the request
             match client_ref
                 .get(url)
-                .header("User-Agent", "iptoasn-webservice/0.2.5")
+                .header(
+                    "User-Agent",
+                    concat!("iptoasn-webservice/", env!("CARGO_PKG_VERSION")),
+                )
                 .send()
                 .await
             {
@@ -94,26 +117,12 @@ impl Asns {
                         error!("Unable to load the database, status: {}", res.status());
                         warn!("HTTP request failed, attempting to use cached data");
 
-                        // Try fallback sources on HTTP errors too
-                        let fallback_paths = [
-                            "cache/ip2asn-combined.tsv.gz",
-                            "ip2asn-combined.tsv.gz",
-                            "test_data.tsv.gz",
-                        ];
-
-                        for path in &fallback_paths {
-                            match std::fs::read(path) {
-                                Ok(content) => {
-                                    info!("Successfully loaded fallback data from: {}", path);
-                                    return Self::parse_data(content);
-                                }
-                                Err(_) => {
-                                    debug!("Fallback file not found: {}", path);
-                                }
+                        return match Self::try_load_fallback() {
+                            Ok(content) => Self::parse_data(content),
+                            Err(_) => {
+                                Err("Unable to load the database and no fallback data available")
                             }
-                        }
-
-                        return Err("Unable to load the database and no fallback data available");
+                        };
                     }
 
                     // Get response body as bytes
@@ -129,27 +138,13 @@ impl Asns {
                     error!("Failed to send request: {}", e);
                     warn!("Network request failed, attempting to use cached data");
 
-                    // Try multiple fallback sources in order of preference
-                    let fallback_paths = [
-                        "cache/ip2asn-combined.tsv.gz", // Primary cache location
-                        "ip2asn-combined.tsv.gz",       // Local copy
-                        "test_data.tsv.gz",             // Test data fallback
-                    ];
-
-                    for path in &fallback_paths {
-                        match std::fs::read(path) {
-                            Ok(content) => {
-                                info!("Successfully loaded fallback data from: {}", path);
-                                return Self::parse_data(content);
-                            }
-                            Err(_) => {
-                                debug!("Fallback file not found: {}", path);
-                            }
+                    return match Self::try_load_fallback() {
+                        Ok(content) => Self::parse_data(content),
+                        Err(msg) => {
+                            error!("{}", msg);
+                            Err("Failed to load database from URL and all fallback sources")
                         }
-                    }
-
-                    error!("No fallback data sources available");
-                    return Err("Failed to load database from URL and all fallback sources");
+                    };
                 }
             }
         } else {
