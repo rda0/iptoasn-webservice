@@ -1,19 +1,20 @@
 use flate2::read::GzDecoder;
 use log::{debug, error, info, warn};
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::prelude::*;
 use std::net::IpAddr;
 use std::ops::Bound::{Included, Unbounded};
 use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct Asn {
     pub first_ip: IpAddr,
     pub last_ip: IpAddr,
     pub number: u32,
-    pub country: String,
-    pub description: String,
+    pub country: Arc<str>,
+    pub description: Arc<str>,
 }
 
 impl PartialEq for Asn {
@@ -37,13 +38,13 @@ impl PartialOrd for Asn {
 }
 
 impl Asn {
-    const fn from_single_ip(ip: IpAddr) -> Self {
+    fn from_single_ip(ip: IpAddr) -> Self {
         Self {
             first_ip: ip,
             last_ip: ip,
             number: 0,
-            country: String::new(),
-            description: String::new(),
+            country: Arc::from(""),
+            description: Arc::from(""),
         }
     }
 }
@@ -183,6 +184,11 @@ impl Asns {
             error!("Unable to decompress the database");
             return Err("Unable to decompress the database");
         }
+
+        // String interning pools to deduplicate country codes and descriptions
+        let mut country_pool: HashMap<String, Arc<str>> = HashMap::new();
+        let mut description_pool: HashMap<String, Arc<str>> = HashMap::new();
+
         let mut asns = BTreeSet::new();
         for line in data.split_terminator('\n') {
             if line.trim().is_empty() {
@@ -210,8 +216,21 @@ impl Asns {
                     continue;
                 }
             };
-            let country = parts.next().unwrap_or("").to_owned();
-            let description = parts.next().unwrap_or("").to_owned();
+
+            // Intern country code
+            let country_str = parts.next().unwrap_or("");
+            let country = country_pool
+                .entry(country_str.to_owned())
+                .or_insert_with(|| Arc::from(country_str))
+                .clone();
+
+            // Intern description
+            let description_str = parts.next().unwrap_or("");
+            let description = description_pool
+                .entry(description_str.to_owned())
+                .or_insert_with(|| Arc::from(description_str))
+                .clone();
+
             let asn = Asn {
                 first_ip,
                 last_ip,
@@ -221,7 +240,13 @@ impl Asns {
             };
             asns.insert(asn);
         }
-        info!("Database loaded with {} entries", asns.len());
+
+        info!(
+            "Database loaded with {} entries ({} unique countries, {} unique descriptions)",
+            asns.len(),
+            country_pool.len(),
+            description_pool.len()
+        );
         Ok(Self { asns })
     }
 

@@ -249,8 +249,8 @@ impl WebService {
             first_ip: Some(found.first_ip.to_string()),
             last_ip: Some(found.last_ip.to_string()),
             as_number: Some(found.number),
-            as_country_code: Some(found.country.clone()),
-            as_description: Some(found.description.clone()),
+            as_country_code: Some(found.country.to_string()),
+            as_description: Some(found.description.to_string()),
         };
 
         Ok(Self::output(&Self::accept_type(headers), &response))
