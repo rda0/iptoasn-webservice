@@ -1,11 +1,4 @@
 use flate2::read::GzDecoder;
-use http::Request;
-use http_body_util::{BodyExt, Empty};
-use hyper::body::Bytes;
-use hyper::{Method, StatusCode};
-use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
 use std::io::prelude::*;
@@ -59,7 +52,10 @@ pub struct Asns {
 }
 
 impl Asns {
-    pub async fn new(url: &str) -> Result<Self, &'static str> {
+    pub async fn new(
+        url: &str,
+        http_client: Option<&reqwest::Client>,
+    ) -> Result<Self, &'static str> {
         info!("Loading the database from {}", url);
 
         let bytes = if url.starts_with("file://") {
@@ -67,7 +63,7 @@ impl Asns {
             let path = url.trim_start_matches("file://");
             info!("Loading the database from file://{}", path);
             match std::fs::read(path) {
-                Ok(content) => Bytes::from(content),
+                Ok(content) => content,
                 Err(e) => {
                     error!("Unable to read the database: {}", e);
                     return Err("Unable to read the database");
@@ -77,33 +73,24 @@ impl Asns {
             // Handle HTTP or HTTPS URL
             info!("Loading the database from {}", url);
 
-            // Create an HTTPS connector with TLS 1.3 support
-            let https = HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("Failed to load native roots")
-                .https_or_http()
-                .enable_http1()
-                .enable_http2() // Enable HTTP/2 for better performance
-                .build();
+            // Use provided client or create a new one
+            let client;
+            let client_ref = if let Some(provided_client) = http_client {
+                provided_client
+            } else {
+                client = reqwest::Client::new();
+                &client
+            };
 
-            // Create a client with the HTTPS connector
-            let client = Client::builder(TokioExecutor::new()).build::<_, Empty<Bytes>>(https);
-
-            // Create the request
-            let req = Request::builder()
-                .method(Method::GET)
-                .uri(url)
+            // Send the request
+            match client_ref
+                .get(url)
                 .header("User-Agent", "iptoasn-webservice/0.2.5")
-                .body(Empty::<Bytes>::new())
-                .map_err(|e| {
-                    error!("Failed to create request: {}", e);
-                    "Failed to create request"
-                })?;
-
-            // Send the request and get the response
-            match client.request(req).await {
+                .send()
+                .await
+            {
                 Ok(res) => {
-                    if res.status() != StatusCode::OK {
+                    if !res.status().is_success() {
                         error!("Unable to load the database, status: {}", res.status());
                         warn!("HTTP request failed, attempting to use cached data");
 
@@ -118,7 +105,7 @@ impl Asns {
                             match std::fs::read(path) {
                                 Ok(content) => {
                                     info!("Successfully loaded fallback data from: {}", path);
-                                    return Self::parse_data(Bytes::from(content));
+                                    return Self::parse_data(content);
                                 }
                                 Err(_) => {
                                     debug!("Fallback file not found: {}", path);
@@ -129,10 +116,9 @@ impl Asns {
                         return Err("Unable to load the database and no fallback data available");
                     }
 
-                    // Collect the response body
-                    let body = res.into_body();
-                    match BodyExt::collect(body).await {
-                        Ok(collected) => collected.to_bytes(),
+                    // Get response body as bytes
+                    match res.bytes().await {
+                        Ok(bytes) => bytes.to_vec(),
                         Err(e) => {
                             error!("Unable to read response body: {}", e);
                             return Err("Unable to read response body");
@@ -154,7 +140,7 @@ impl Asns {
                         match std::fs::read(path) {
                             Ok(content) => {
                                 info!("Successfully loaded fallback data from: {}", path);
-                                return Self::parse_data(Bytes::from(content));
+                                return Self::parse_data(content);
                             }
                             Err(_) => {
                                 debug!("Fallback file not found: {}", path);
@@ -179,7 +165,7 @@ impl Asns {
         Self::parse_data(bytes)
     }
 
-    fn save_to_cache(bytes: &Bytes) {
+    fn save_to_cache(bytes: &[u8]) {
         // Create cache directory if it doesn't exist
         if let Err(e) = std::fs::create_dir_all("cache") {
             warn!("Failed to create cache directory: {}", e);
@@ -193,9 +179,9 @@ impl Asns {
         }
     }
 
-    fn parse_data(bytes: Bytes) -> Result<Self, &'static str> {
+    fn parse_data(bytes: Vec<u8>) -> Result<Self, &'static str> {
         let mut data = String::new();
-        if GzDecoder::new(bytes.as_ref())
+        if GzDecoder::new(bytes.as_slice())
             .read_to_string(&mut data)
             .is_err()
         {

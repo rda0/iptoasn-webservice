@@ -58,7 +58,14 @@ async fn main() {
         }
     };
 
-    let asns = match get_asns(db_url).await {
+    // Create HTTP client once if URL is HTTP/HTTPS
+    let http_client = if db_url.starts_with("http://") || db_url.starts_with("https://") {
+        Some(reqwest::Client::new())
+    } else {
+        None
+    };
+
+    let asns = match get_asns(db_url, http_client.as_ref()).await {
         Ok(asns) => asns,
         Err(e) => {
             error!("Failed to load initial database: {e}");
@@ -72,10 +79,11 @@ async fn main() {
     if refresh_delay > 0 {
         let asns_arc_t = asns_arc.clone();
         let db_url_t = db_url.clone();
+        let http_client_t = http_client.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(refresh_delay * 60)).await;
-                update_asns(&asns_arc_t, &db_url_t).await;
+                update_asns(&asns_arc_t, &db_url_t, http_client_t.as_ref()).await;
             }
         });
         info!(
@@ -89,16 +97,23 @@ async fn main() {
     WebService::start(asns_arc, listen_addr).await;
 }
 
-async fn get_asns(db_url: &str) -> Result<Asns, &'static str> {
+async fn get_asns(
+    db_url: &str,
+    http_client: Option<&reqwest::Client>,
+) -> Result<Asns, &'static str> {
     info!("Retrieving ASNs");
-    let asns = Asns::new(db_url).await?;
+    let asns = Asns::new(db_url, http_client).await?;
     info!("ASNs loaded");
     Ok(asns)
 }
 
-async fn update_asns(asns_arc: &Arc<RwLock<Arc<Asns>>>, db_url: &str) {
+async fn update_asns(
+    asns_arc: &Arc<RwLock<Arc<Asns>>>,
+    db_url: &str,
+    http_client: Option<&reqwest::Client>,
+) {
     info!("Attempting to update ASN database");
-    let asns = match get_asns(db_url).await {
+    let asns = match get_asns(db_url, http_client).await {
         Ok(asns) => asns,
         Err(e) => {
             warn!("Failed to update ASN database: {e}");

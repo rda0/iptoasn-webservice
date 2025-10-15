@@ -4,9 +4,9 @@ use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, EXPIRES, VARY};
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -291,7 +291,10 @@ impl WebService {
                     async move { Self::handle_request(req, asns_arc, remote_addr).await }
                 });
 
-                if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                if let Err(err) = auto::Builder::new(TokioExecutor::new())
+                    .serve_connection(io, service)
+                    .await
+                {
                     log::error!("Error serving connection: {:?}", err);
                 }
             });
