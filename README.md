@@ -54,12 +54,17 @@ cargo build --release
   - Lookup provided IP address
 - `/v1/as/ip`
   - Lookup requester's IP address, prioritized as X-Real-IP > X-Forwarded-For > Request IP
+- `/v1/as/ips`
+  - Bulk lookup provided list of IP addresses
 
 ### JSON Response
 
 ```sh
 curl -H'Accept: application/json' http://localhost:53661/v1/as/ip/8.8.8.8
+xh http://localhost:53661/v1/as/ip/8.8.8.8 Accept:application/json
 ```
+
+Returns json:
 
 ```json
 {
@@ -77,9 +82,75 @@ curl -H'Accept: application/json' http://localhost:53661/v1/as/ip/8.8.8.8
 
 ```sh
 curl http://localhost:53661/v1/as/ip/8.8.8.8
+xh http://localhost:53661/v1/as/ip/8.8.8.8
 ```
 
 Returns a formatted HTML page with the IP information.
+
+### Plain Response
+
+```sh
+curl -H'Accept: text/plain' http://localhost:53661/v1/as/ip/8.8.8.8
+xh http://localhost:53661/v1/as/ip/8.8.8.8 Accept:text/plain
+```
+
+Returns a plaintext response in the format:
+
+```
+15169 | 8.8.8.0-8.8.8.255 | GOOGLE, US
+```
+
+### Bulk IP JSON Response
+
+```sh
+echo '["8.8.8.8","8.8.4.4"]' | curl -H "Accept: application/json" -X PUT --json @- http://localhost:53661/v1/as/ips
+echo '["8.8.8.8","8.8.4.4"]' | xh PUT http://localhost:53661/v1/as/ips Accept:application/json
+```
+
+Returns json:
+
+```json
+[
+  {
+    "ip": "8.8.8.8",
+    "announced": true,
+    "first_ip": "8.8.8.0",
+    "last_ip": "8.8.8.255",
+    "as_number": 15169,
+    "as_country_code": "US",
+    "as_description": "GOOGLE"
+  },
+  {
+    "ip": "8.8.4.4",
+    "announced": true,
+    "first_ip": "8.8.4.0",
+    "last_ip": "8.8.4.255",
+    "as_number": 15169,
+    "as_country_code": "US",
+    "as_description": "GOOGLE"
+  }
+]
+```
+
+### Bulk IP Plain Response
+
+```sh
+echo -e '8.8.8.8\n8.8.4.4' | curl -H "Accept: text/plain" -X PUT --data-binary @- http://localhost:53661/v1/as/ips
+echo -e '8.8.8.8\n8.8.4.4' | xh PUT http://localhost:53661/v1/as/ips Accept:text/plain
+```
+
+or alternatively:
+
+```sh
+echo -e 'begin\n8.8.8.8\n8.8.4.4\nend' | xh PUT http://localhost:53661/v1/as/ips Accept:text/plain
+```
+
+Returns a plaintext response in the format:
+
+```
+15169    | 8.8.8.8              | GOOGLE, US
+15169    | 8.8.4.4              | GOOGLE, US
+```
 
 ### Unannounced IPs
 
