@@ -252,16 +252,21 @@ impl WebService {
     }
 
     fn output_plain(response: &IpLookupResponse) -> Response<Full<Bytes>> {
-        let plain = format_args!(
-            "{} | {}-{} | {}, {}",
-            response.as_number.unwrap(),
-            response.first_ip.as_ref().unwrap(),
-            response.last_ip.as_ref().unwrap(),
-            response.as_description.as_ref().unwrap(),
-            response.as_country_code.as_ref().unwrap()
-        );
-        let mut response = Response::new(Full::new(Bytes::from(plain.to_string())));
+        let plain = if response.announced {
+            format!(
+                "{} | {}-{} | {}, {}",
+                response.as_number.unwrap(),
+                response.first_ip.as_deref().unwrap(),
+                response.last_ip.as_deref().unwrap(),
+                response.as_description.as_deref().unwrap(),
+                response.as_country_code.as_deref().unwrap()
+            )
+        } else {
+            // Consistent with output_plain_vec()'s "Not announced" representation
+            format!("- | {} | Not announced", response.ip)
+        };
 
+        let mut response = Response::new(Full::new(Bytes::from(plain)));
         response.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_static("text/plain; charset=utf-8"),
