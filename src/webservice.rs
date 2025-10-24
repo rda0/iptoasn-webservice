@@ -2,7 +2,7 @@ use crate::asns::Asns;
 use horrorshow::prelude::*;
 use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, EXPIRES, VARY};
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -40,7 +40,6 @@ struct IpLookupResponse {
     as_description: Option<String>,
 }
 
-
 impl IpLookupResponse {
     fn not_found(ip: String) -> Self {
         Self {
@@ -58,6 +57,7 @@ impl WebService {
         asns_arc: Arc<RwLock<Arc<Asns>>>,
         remote_addr: SocketAddr,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
+        // Borrow method and uri to match against reference patterns
         let method = req.method();
         let uri = req.uri().path();
 
@@ -71,6 +71,7 @@ impl WebService {
                 let ip_s = path.strip_prefix("/v1/as/ip/").unwrap_or("");
                 Self::ip_lookup(ip_s, req.headers(), asns_arc)
             }
+            (&Method::PUT, "/v1/as/ips") => Self::handle_put_ips(req, asns_arc).await,
             _ => {
                 let mut response = Response::new(Full::new(Bytes::from("Not Found")));
                 *response.status_mut() = StatusCode::NOT_FOUND;
@@ -153,6 +154,20 @@ impl WebService {
         response
     }
 
+    fn output_json_vec(responses: &[IpLookupResponse]) -> Response<Full<Bytes>> {
+        let json = serde_json::to_string(responses).unwrap();
+        let mut response = Response::new(Full::new(Bytes::from(json)));
+
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+
+        response
+    }
+
     fn output_html(response: &IpLookupResponse) -> Response<Full<Bytes>> {
         let html = html! {
             head {
@@ -218,7 +233,14 @@ impl WebService {
     }
 
     fn output_plain(response: &IpLookupResponse) -> Response<Full<Bytes>> {
-        let plain = format_args!("{} | {}-{} | {}, {}", response.as_number.unwrap(), response.first_ip.as_ref().unwrap(), response.last_ip.as_ref().unwrap(), response.as_description.as_ref().unwrap(), response.as_country_code.as_ref().unwrap());
+        let plain = format_args!(
+            "{} | {}-{} | {}, {}",
+            response.as_number.unwrap(),
+            response.first_ip.as_ref().unwrap(),
+            response.last_ip.as_ref().unwrap(),
+            response.as_description.as_ref().unwrap(),
+            response.as_country_code.as_ref().unwrap()
+        );
         let mut response = Response::new(Full::new(Bytes::from(plain.to_string())));
 
         response.headers_mut().insert(
@@ -273,6 +295,77 @@ impl WebService {
         };
 
         Ok(Self::output(&Self::accept_type(headers), &response))
+    }
+
+    async fn handle_put_ips(
+        req: Request<hyper::body::Incoming>,
+        asns_arc: Arc<RwLock<Arc<Asns>>>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        // Read full request body
+        let collected = match req.into_body().collect().await {
+            Ok(c) => c,
+            Err(_) => {
+                let mut resp = Response::new(Full::new(Bytes::from(
+                    r#"{"error":"Failed to read request body"}"#,
+                )));
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+                return Ok(resp);
+            }
+        };
+
+        let body = collected.to_bytes();
+
+        // Parse JSON array of IP strings
+        let ip_list: Vec<String> = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(_) => {
+                let mut resp = Response::new(Full::new(Bytes::from(
+                    r#"{"error":"Invalid JSON. Expected an array of IP strings"}"#,
+                )));
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+                return Ok(resp);
+            }
+        };
+
+        // Perform lookups
+        let asns = asns_arc.read().unwrap().clone();
+        let mut results: Vec<IpLookupResponse> = Vec::with_capacity(ip_list.len());
+
+        for ip_s in ip_list {
+            match std::net::IpAddr::from_str(&ip_s) {
+                Ok(ip) => {
+                    if let Some(found) = asns.lookup_by_ip(ip) {
+                        results.push(IpLookupResponse {
+                            ip: ip.to_string(),
+                            announced: true,
+                            first_ip: Some(found.first_ip.to_string()),
+                            last_ip: Some(found.last_ip.to_string()),
+                            as_number: Some(found.number),
+                            as_country_code: Some(found.country.to_string()),
+                            as_description: Some(found.description.to_string()),
+                        });
+                    } else {
+                        results.push(IpLookupResponse::not_found(ip_s));
+                    }
+                }
+                Err(_) => {
+                    results.push(IpLookupResponse::not_found(ip_s));
+                }
+            }
+        }
+
+        // Always JSON for batch route
+        let mut response = Self::output_json_vec(&results);
+        *response.status_mut() = StatusCode::OK;
+        Ok(response)
     }
 
     pub async fn start(asns_arc: Arc<RwLock<Arc<Asns>>>, listen_addr: &str) {
