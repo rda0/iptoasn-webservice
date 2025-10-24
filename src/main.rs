@@ -1,16 +1,10 @@
-#[macro_use]
-extern crate horrorshow;
-
-mod asns;
-mod webservice;
-
 use mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-use crate::asns::Asns;
-use crate::webservice::WebService;
+use iptoasn_webservice::asns::Asns;
+use iptoasn_webservice::webservice::WebService;
 use clap::{Arg, Command};
 use log::{error, info, warn};
 use std::sync::{Arc, RwLock};
