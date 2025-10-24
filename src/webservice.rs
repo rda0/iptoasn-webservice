@@ -21,6 +21,7 @@ const TTL: u32 = 86_400;
 enum OutputType {
     Json,
     Html,
+    Plain,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -112,6 +113,9 @@ impl WebService {
             if let Ok(accept_str) = accept.to_str() {
                 if accept_str.contains("application/json") {
                     return OutputType::Json;
+                }
+                if accept_str.contains("text/plain") {
+                    return OutputType::Plain;
                 }
             }
         }
@@ -213,10 +217,25 @@ impl WebService {
         response
     }
 
+    fn output_plain(response: &IpLookupResponse) -> Response<Full<Bytes>> {
+        let plain = format_args!("{} | {}-{} | {}, {}", response.as_number.unwrap(), response.first_ip.as_ref().unwrap(), response.last_ip.as_ref().unwrap(), response.as_description.as_ref().unwrap(), response.as_country_code.as_ref().unwrap());
+        let mut response = Response::new(Full::new(Bytes::from(plain.to_string())));
+
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+
+        response
+    }
+
     fn output(output_type: &OutputType, response: &IpLookupResponse) -> Response<Full<Bytes>> {
         match *output_type {
             OutputType::Json => Self::output_json(response),
             OutputType::Html => Self::output_html(response),
+            OutputType::Plain => Self::output_plain(response),
         }
     }
 
