@@ -18,9 +18,15 @@ use tokio::net::TcpListener;
 
 const TTL: u32 = 86_400;
 
+#[derive(PartialEq, Eq)]
 enum OutputType {
     Json,
     Html,
+    Plain,
+}
+
+enum BodyInputType {
+    Json,
     Plain,
 }
 
@@ -57,7 +63,6 @@ impl WebService {
         asns_arc: Arc<RwLock<Arc<Asns>>>,
         remote_addr: SocketAddr,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
-        // Borrow method and uri to match against reference patterns
         let method = req.method();
         let uri = req.uri().path();
 
@@ -121,6 +126,20 @@ impl WebService {
             }
         }
         OutputType::Html
+    }
+
+    fn body_input_type(headers: &HeaderMap) -> Option<BodyInputType> {
+        if let Some(ct) = headers.get(CONTENT_TYPE) {
+            if let Ok(ct_str) = ct.to_str() {
+                let ct_main = ct_str.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+                return match ct_main.as_str() {
+                    "application/json" => Some(BodyInputType::Json),
+                    "text/plain" => Some(BodyInputType::Plain),
+                    _ => None,
+                };
+            }
+        }
+        None
     }
 
     fn cache_headers(headers: &mut HeaderMap) {
@@ -253,6 +272,34 @@ impl WebService {
         response
     }
 
+    fn output_plain_vec(responses: &[IpLookupResponse]) -> Response<Full<Bytes>> {
+        let max_ip_len = responses.iter().map(|r| r.ip.len()).max().unwrap_or(0).max(20);
+        let mut out = String::new();
+
+        for r in responses {
+            let asn_str = if r.announced {
+                r.as_number.unwrap().to_string()
+            } else {
+                "-".to_string()
+            };
+            let desc_cc = if r.announced {
+                format!("{}, {}", r.as_description.as_ref().unwrap(), r.as_country_code.as_ref().unwrap())
+            } else {
+                "Not announced".to_string()
+            };
+            out.push_str(&format!("{:<8} | {:<width$} | {}\n", asn_str, r.ip, desc_cc, width = max_ip_len));
+        }
+
+        let mut response = Response::new(Full::new(Bytes::from(out)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
     fn output(output_type: &OutputType, response: &IpLookupResponse) -> Response<Full<Bytes>> {
         match *output_type {
             OutputType::Json => Self::output_json(response),
@@ -297,45 +344,138 @@ impl WebService {
         Ok(Self::output(&Self::accept_type(headers), &response))
     }
 
+    fn parse_plain_ip_list(body: &str) -> Vec<String> {
+        let mut ips = Vec::new();
+        let mut in_block = false;
+        let mut saw_begin = false;
+
+        for raw_line in body.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match line.to_ascii_lowercase().as_str() {
+                "begin" => {
+                    in_block = true;
+                    saw_begin = true;
+                    continue;
+                }
+                "end" => {
+                    in_block = false;
+                    continue;
+                }
+                _ => {}
+            }
+            if saw_begin {
+                if in_block {
+                    ips.push(line.to_string());
+                }
+            } else {
+                ips.push(line.to_string());
+            }
+        }
+
+        ips
+    }
+
     async fn handle_put_ips(
         req: Request<hyper::body::Incoming>,
         asns_arc: Arc<RwLock<Arc<Asns>>>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
-        // Read full request body
+        let headers = req.headers().clone();
+
+        let output_type = match Self::accept_type(&headers) {
+            OutputType::Plain => OutputType::Plain,
+            _ => OutputType::Json,
+        };
+
+        let input_type = Self::body_input_type(&headers);
+
         let collected = match req.into_body().collect().await {
             Ok(c) => c,
             Err(_) => {
-                let mut resp = Response::new(Full::new(Bytes::from(
-                    r#"{"error":"Failed to read request body"}"#,
-                )));
+                let mut resp = match output_type {
+                    OutputType::Plain => Response::new(Full::new(Bytes::from(
+                        "Failed to read request body\n",
+                    ))),
+                    _ => Response::new(Full::new(Bytes::from(
+                        r#"{"error":"Failed to read request body"}"#,
+                    ))),
+                };
                 *resp.status_mut() = StatusCode::BAD_REQUEST;
                 resp.headers_mut().insert(
                     CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
+                    HeaderValue::from_static(match output_type {
+                        OutputType::Plain => "text/plain; charset=utf-8",
+                        _ => "application/json; charset=utf-8",
+                    }),
                 );
                 return Ok(resp);
             }
         };
 
-        let body = collected.to_bytes();
+        let body_bytes = collected.to_bytes();
+        let body_str = String::from_utf8_lossy(&body_bytes);
 
-        // Parse JSON array of IP strings
-        let ip_list: Vec<String> = match serde_json::from_slice(&body) {
-            Ok(v) => v,
-            Err(_) => {
-                let mut resp = Response::new(Full::new(Bytes::from(
-                    r#"{"error":"Invalid JSON. Expected an array of IP strings"}"#,
-                )));
-                *resp.status_mut() = StatusCode::BAD_REQUEST;
-                resp.headers_mut().insert(
-                    CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
-                );
-                return Ok(resp);
+        let ip_list: Vec<String> = match input_type {
+            Some(BodyInputType::Json) => {
+                match serde_json::from_slice::<Vec<String>>(&body_bytes) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let looks_plain = !body_str.trim_start().starts_with('[');
+                        if output_type == OutputType::Plain || looks_plain {
+                            let ips = Self::parse_plain_ip_list(&body_str);
+                            if ips.is_empty() {
+                                let mut resp = Response::new(Full::new(Bytes::from(
+                                    "Invalid text body. Expected newline-separated IPs, optionally wrapped by 'begin'/'end'\n",
+                                )));
+                                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                                resp.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("text/plain; charset=utf-8"),
+                                );
+                                return Ok(resp);
+                            }
+                            ips
+                        } else {
+                            let mut resp = Response::new(Full::new(Bytes::from(
+                                r#"{"error":"Invalid JSON. Expected an array of IP strings"}"#,
+                            )));
+                            *resp.status_mut() = StatusCode::BAD_REQUEST;
+                            resp.headers_mut().insert(
+                                CONTENT_TYPE,
+                                HeaderValue::from_static("application/json; charset=utf-8"),
+                            );
+                            return Ok(resp);
+                        }
+                    }
+                }
+            }
+            Some(BodyInputType::Plain) | None => {
+                let ips = Self::parse_plain_ip_list(&body_str);
+                if ips.is_empty() {
+                    let mut resp = match output_type {
+                        OutputType::Plain => Response::new(Full::new(Bytes::from(
+                            "Invalid text body. Expected newline-separated IPs, optionally wrapped by 'begin'/'end'\n",
+                        ))),
+                        _ => Response::new(Full::new(Bytes::from(
+                            r#"{"error":"Invalid text body. Expected newline-separated IPs, optionally wrapped by 'begin'/'end'"}"#,
+                        ))),
+                    };
+                    *resp.status_mut() = StatusCode::BAD_REQUEST;
+                    resp.headers_mut().insert(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static(match output_type {
+                            OutputType::Plain => "text/plain; charset=utf-8",
+                            _ => "application/json; charset=utf-8",
+                        }),
+                    );
+                    return Ok(resp);
+                }
+                ips
             }
         };
 
-        // Perform lookups
         let asns = asns_arc.read().unwrap().clone();
         let mut results: Vec<IpLookupResponse> = Vec::with_capacity(ip_list.len());
 
@@ -362,8 +502,10 @@ impl WebService {
             }
         }
 
-        // Always JSON for batch route
-        let mut response = Self::output_json_vec(&results);
+        let mut response = match output_type {
+            OutputType::Plain => Self::output_plain_vec(&results),
+            _ => Self::output_json_vec(&results),
+        };
         *response.status_mut() = StatusCode::OK;
         Ok(response)
     }
