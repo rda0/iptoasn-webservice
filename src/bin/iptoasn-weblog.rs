@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::IpAddr;
-use std::sync::{Arc, RwLock};
 use std::str::FromStr;
+use std::sync::{Arc, RwLock};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -18,7 +18,7 @@ use iptoasn_webservice::asns::Asns;
 async fn main() {
     env_logger::init();
 
-let matches = Command::new("iptoasn-weblog")
+    let matches = Command::new("iptoasn-weblog")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Sven Mäder <maeder@phys.ethz.ch>")
         .about("Annotate Apache/nginx logs with ASN info for client IPs")
@@ -93,7 +93,14 @@ let matches = Command::new("iptoasn-weblog")
 
     // Precompile IP-matching regex
     let re_ipv4 = Regex::new(r"\b(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\b").unwrap();
-    let re_ipv6 = Regex::new(r"(?P<ip>\b[0-9a-fA-F:]+:[0-9a-fA-F:]+\b)").unwrap();
+
+    // IPv6: capture optional 1-char pre-delimiter (or start), the IPv6 token, and the post-delimiter (or end).
+    // This avoids relying on \b, which fails when the address ends with ':' (e.g., '::').
+    // We keep the delimiters in the match and re-insert them in the replacement to preserve text.
+    let re_ipv6 = Regex::new(
+        r"(?P<pre>^|[^0-9A-Fa-f:])(?P<ip>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}|::)(?P<post>[^0-9A-Fa-f:]|$)"
+    )
+    .unwrap();
 
     // Choose output writer: line-buffered for stdin when requested, else buffered
     let stdout_raw = io::stdout();
@@ -123,11 +130,18 @@ let matches = Command::new("iptoasn-weblog")
             })
             .to_string();
 
-        // Replace IPv6 occurrences
+        // Replace IPv6 occurrences (preserving surrounding delimiters)
         line = re_ipv6
             .replace_all(&line, |caps: &regex::Captures| {
+                let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
                 let ip_s = caps.name("ip").unwrap().as_str();
-                annotate_ip_token(ip_s, include_description, &asns_arc, &mut cache)
+                let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
+                format!(
+                    "{}{}{}",
+                    pre,
+                    annotate_ip_token(ip_s, include_description, &asns_arc, &mut cache),
+                    post
+                )
             })
             .to_string();
 
@@ -148,7 +162,7 @@ async fn get_asns(
     http_client: Option<&reqwest::Client>,
 ) -> Result<Asns, &'static str> {
     info!("Retrieving ASNs");
-    let asns = Asns::new(db_url, http_client).await?;
+    let asns = Asns::new(db_url, http_client).await.map_err(|_| "ASNs load failed")?;
     info!("ASNs loaded");
     Ok(asns)
 }
@@ -187,7 +201,7 @@ fn annotate_ip_token(
         s
     } else {
         // No ASN found (local/private or unrouted)
-        let mut s = format!("{} [AS0, XX", ip_s);
+        let mut s = format!("{} [NA, --", ip_s);
         if include_description {
             s.push_str(", local or unknown");
         }
