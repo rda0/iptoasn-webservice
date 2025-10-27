@@ -123,9 +123,19 @@ async fn main() {
     // Precompile IP-matching regex
     let re_ipv4 = Regex::new(r"\b(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\b").unwrap();
 
-    // IPv6 matching that doesn't rely on \b and preserves delimiters
+    // IPv6 matching that doesn't rely on \b and preserves delimiters.
+    // Modified to ignore IPv6 addresses starting with ::ffff (IPv4-mapped IPv6).
+    // Those are left untouched here so that the IPv4 regex handles the embedded IPv4.
     let re_ipv6 = Regex::new(
-        r"(?P<pre>^|[^0-9A-Fa-f:])(?P<ip>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}|::)(?P<post>[^0-9A-Fa-f:]|$)",
+        r"(?x)
+          (?P<pre>^|[^0-9A-Fa-f:])
+          (?:
+              (?P<skip>::[Ff]{4}:[0-9A-Fa-f:.]+)           # IPv4-mapped (::ffff:...)
+            |
+              (?P<ip>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}|::)
+          )
+          (?P<post>[^0-9A-Fa-f:]|$)
+        ",
     )
     .unwrap();
 
@@ -165,12 +175,19 @@ async fn main() {
             })
             .to_string();
 
-        // Replace IPv6 occurrences (preserving surrounding delimiters)
+        // Replace IPv6 occurrences (preserving surrounding delimiters),
+        // but ignore IPv4-mapped IPv6 (::ffff:...)
         line = re_ipv6
             .replace_all(&line, |caps: &regex::Captures| {
                 let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
-                let ip_s = caps.name("ip").unwrap().as_str();
                 let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
+
+                if let Some(skip) = caps.name("skip") {
+                    // Leave ::ffff:... as-is; IPv4 part already handled by IPv4 regex.
+                    return format!("{}{}{}", pre, skip.as_str(), post);
+                }
+
+                let ip_s = caps.name("ip").unwrap().as_str();
                 format!(
                     "{}{}{}",
                     pre,
