@@ -51,12 +51,41 @@ async fn main() {
                 .help("Flush each output line immediately when reading from stdin")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("as_markers")
+                .long("as-markers")
+                .value_name("pair")
+                .help("Two characters: opening and closing marker for AS info (e.g., [] or <>)")
+                .default_value("[]"),
+        )
+        .arg(
+            Arg::new("as_sep")
+                .long("as-sep")
+                .value_name("str")
+                .help("Delimiter between AS info fields")
+                .default_value(", "),
+        )
         .get_matches();
 
     let db_url = matches.get_one::<String>("db_url").unwrap();
     let include_description = matches.get_flag("description");
     let input_path = matches.get_one::<String>("input").map(String::as_str);
     let line_buffered = matches.get_flag("line_buffered");
+
+    // Parse AS markers (must be exactly two Unicode characters)
+    let as_markers = matches.get_one::<String>("as_markers").unwrap();
+    let mut chs = as_markers.chars();
+    let (as_open, as_close) = match (chs.next(), chs.next(), chs.next()) {
+        (Some(o), Some(c), None) => (o.to_string(), c.to_string()),
+        _ => {
+            error!(
+                "--as-markers must be exactly two characters, e.g., \"[]\" or \"<>\", got: {}",
+                as_markers
+            );
+            std::process::exit(2);
+        }
+    };
+    let as_sep = matches.get_one::<String>("as_sep").unwrap();
 
     // Create HTTP client once if URL is HTTP/HTTPS
     let http_client = if db_url.starts_with("http://") || db_url.starts_with("https://") {
@@ -94,11 +123,9 @@ async fn main() {
     // Precompile IP-matching regex
     let re_ipv4 = Regex::new(r"\b(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\b").unwrap();
 
-    // IPv6: capture optional 1-char pre-delimiter (or start), the IPv6 token, and the post-delimiter (or end).
-    // This avoids relying on \b, which fails when the address ends with ':' (e.g., '::').
-    // We keep the delimiters in the match and re-insert them in the replacement to preserve text.
+    // IPv6 matching that doesn't rely on \b and preserves delimiters
     let re_ipv6 = Regex::new(
-        r"(?P<pre>^|[^0-9A-Fa-f:])(?P<ip>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}|::)(?P<post>[^0-9A-Fa-f:]|$)"
+        r"(?P<pre>^|[^0-9A-Fa-f:])(?P<ip>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}|::)(?P<post>[^0-9A-Fa-f:]|$)",
     )
     .unwrap();
 
@@ -126,7 +153,15 @@ async fn main() {
         line = re_ipv4
             .replace_all(&line, |caps: &regex::Captures| {
                 let ip_s = caps.name("ip").unwrap().as_str();
-                annotate_ip_token(ip_s, include_description, &asns_arc, &mut cache)
+                annotate_ip_token(
+                    ip_s,
+                    include_description,
+                    &asns_arc,
+                    &mut cache,
+                    &as_open,
+                    &as_close,
+                    as_sep,
+                )
             })
             .to_string();
 
@@ -139,7 +174,15 @@ async fn main() {
                 format!(
                     "{}{}{}",
                     pre,
-                    annotate_ip_token(ip_s, include_description, &asns_arc, &mut cache),
+                    annotate_ip_token(
+                        ip_s,
+                        include_description,
+                        &asns_arc,
+                        &mut cache,
+                        &as_open,
+                        &as_close,
+                        as_sep
+                    ),
                     post
                 )
             })
@@ -162,7 +205,9 @@ async fn get_asns(
     http_client: Option<&reqwest::Client>,
 ) -> Result<Asns, &'static str> {
     info!("Retrieving ASNs");
-    let asns = Asns::new(db_url, http_client).await.map_err(|_| "ASNs load failed")?;
+    let asns = Asns::new(db_url, http_client)
+        .await
+        .map_err(|_| "ASNs load failed")?;
     info!("ASNs loaded");
     Ok(asns)
 }
@@ -172,6 +217,9 @@ fn annotate_ip_token(
     include_description: bool,
     asns_arc: &Arc<RwLock<Arc<Asns>>>,
     cache: &mut HashMap<(String, bool), Option<String>>,
+    as_open: &str,
+    as_close: &str,
+    as_sep: &str,
 ) -> String {
     if let Some(cached) = cache.get(&(ip_s.to_string(), include_description)) {
         return match cached {
@@ -192,20 +240,34 @@ fn annotate_ip_token(
     let asns = asns_arc.read().unwrap().clone();
 
     let annot = if let Some(found) = asns.lookup_by_ip(ip) {
-        let mut s = format!("{} [AS{}, {}", ip_s, found.number, found.country);
+        let mut s = String::new();
+        s.push_str(ip_s);
+        s.push(' ');
+        s.push_str(as_open);
+        s.push_str("AS");
+        s.push_str(&found.number.to_string());
+        s.push_str(as_sep);
+        s.push_str(&found.country);
         if include_description {
-            s.push_str(", ");
+            s.push_str(as_sep);
             s.push_str(&found.description);
         }
-        s.push(']');
+        s.push_str(as_close);
         s
     } else {
         // No ASN found (local/private or unrouted)
-        let mut s = format!("{} [NA, --", ip_s);
+        let mut s = String::new();
+        s.push_str(ip_s);
+        s.push(' ');
+        s.push_str(as_open);
+        s.push_str("NA");
+        s.push_str(as_sep);
+        s.push_str("--");
         if include_description {
-            s.push_str(", local or unknown");
+            s.push_str(as_sep);
+            s.push_str("local or unknown");
         }
-        s.push(']');
+        s.push_str(as_close);
         s
     };
 
