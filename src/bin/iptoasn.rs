@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 static GLOBAL: MiMalloc = MiMalloc;
 
 use iptoasn_webservice::asns::Asns;
+use iptoasn_webservice::DEFAULT_DB_URL;
 
 #[tokio::main]
 async fn main() {
@@ -29,7 +30,8 @@ async fn main() {
                 .long("dburl")
                 .value_name("db_url")
                 .help("URL of the database")
-                .default_value("https://iptoasn.com/data/ip2asn-combined.tsv.gz"),
+                .env("IPTOASN_DB_URL")
+                .default_value(DEFAULT_DB_URL),
         )
         .arg(
             Arg::new("cache_file")

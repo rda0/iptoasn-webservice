@@ -5,6 +5,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use iptoasn_webservice::asns::Asns;
 use iptoasn_webservice::webservice::WebService;
+use iptoasn_webservice::DEFAULT_DB_URL;
 use clap::{Arg, Command};
 use log::{error, info, warn};
 use std::sync::{Arc, RwLock};
@@ -41,7 +42,8 @@ async fn main() {
                 .long("dburl")
                 .value_name("db_url")
                 .help("URL of the database")
-                .default_value("https://iptoasn.com/data/ip2asn-combined.tsv.gz"),
+                .env("IPTOASN_DB_URL")
+                .default_value(DEFAULT_DB_URL),
         )
         .arg(
             Arg::new("refresh_delay")
