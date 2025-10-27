@@ -9,6 +9,7 @@ use clap::{Arg, Command};
 use log::{error, info, warn};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() {
@@ -25,6 +26,14 @@ async fn main() {
                 .value_name("listen_addr")
                 .help("Address:port to listen to")
                 .default_value("127.0.0.1:53661"),
+        )
+        .arg(
+            Arg::new("cache_file")
+                .short('c')
+                .long("cache-file")
+                .value_name("path")
+                .help("Path to cache file")
+                .default_value("cache/ip2asn-combined.tsv.gz"),
         )
         .arg(
             Arg::new("db_url")
@@ -48,6 +57,7 @@ async fn main() {
     let db_url = matches.get_one::<String>("db_url").unwrap();
     let listen_addr = matches.get_one::<String>("listen_addr").unwrap();
     let refresh_delay = *matches.get_one::<u64>("refresh_delay").unwrap();
+    let cache_file: PathBuf = PathBuf::from(matches.get_one::<String>("cache_file").unwrap());
 
     // Create HTTP client once if URL is HTTP/HTTPS
     let http_client = if db_url.starts_with("http://") || db_url.starts_with("https://") {
@@ -56,7 +66,7 @@ async fn main() {
         None
     };
 
-    let asns = match get_asns(db_url, http_client.as_ref()).await {
+    let asns = match get_asns(db_url, http_client.as_ref(), Some(cache_file.clone())).await {
         Ok(asns) => asns,
         Err(e) => {
             error!("Failed to load initial database: {e}");
@@ -71,10 +81,17 @@ async fn main() {
         let asns_arc_t = asns_arc.clone();
         let db_url_t = db_url.clone();
         let http_client_t = http_client.clone();
+        let cache_file_t = cache_file.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(refresh_delay * 60)).await;
-                update_asns(&asns_arc_t, &db_url_t, http_client_t.as_ref()).await;
+                update_asns(
+                    &asns_arc_t,
+                    &db_url_t,
+                    http_client_t.as_ref(),
+                    Some(cache_file_t.clone()),
+                )
+                .await;
             }
         });
         info!(
@@ -91,9 +108,10 @@ async fn main() {
 async fn get_asns(
     db_url: &str,
     http_client: Option<&reqwest::Client>,
+    cache_file: Option<PathBuf>,
 ) -> Result<Asns, &'static str> {
     info!("Retrieving ASNs");
-    let asns = Asns::new(db_url, http_client).await?;
+    let asns = Asns::new(db_url, http_client, cache_file).await?;
     info!("ASNs loaded");
     Ok(asns)
 }
@@ -102,9 +120,10 @@ async fn update_asns(
     asns_arc: &Arc<RwLock<Arc<Asns>>>,
     db_url: &str,
     http_client: Option<&reqwest::Client>,
+    cache_file: Option<PathBuf>,
 ) {
     info!("Attempting to update ASN database");
-    let asns = match get_asns(db_url, http_client).await {
+    let asns = match get_asns(db_url, http_client, cache_file).await {
         Ok(asns) => asns,
         Err(e) => {
             warn!("Failed to update ASN database: {e}");

@@ -5,6 +5,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -29,6 +30,13 @@ async fn main() {
                 .value_name("db_url")
                 .help("URL of the database")
                 .default_value("https://iptoasn.com/data/ip2asn-combined.tsv.gz"),
+        )
+        .arg(
+            Arg::new("cache_file")
+                .short('c')
+                .long("cache-file")
+                .value_name("path")
+                .help("Override path to cache file (default: $XDG_CACHE_HOME/iptoasn/ip2asn-combined.tsv.gz or ~/.cache/iptoasn/ip2asn-combined.tsv.gz)"),
         )
         .arg(
             Arg::new("input")
@@ -73,6 +81,7 @@ async fn main() {
     let include_description = matches.get_flag("description");
     let input_path = matches.get_one::<String>("input").map(String::as_str);
     let line_buffered = matches.get_flag("line_buffered");
+    let cache_file: Option<PathBuf> = matches.get_one::<String>("cache_file").map(PathBuf::from);
 
     // Parse AS markers (must be exactly two Unicode characters)
     let as_markers = matches.get_one::<String>("as_markers").unwrap();
@@ -97,7 +106,7 @@ async fn main() {
     };
 
     // Load ASN database
-    let asns = match get_asns(db_url, http_client.as_ref()).await {
+    let asns = match get_asns(db_url, http_client.as_ref(), cache_file.clone()).await {
         Ok(asns) => Arc::new(asns),
         Err(e) => {
             error!("Failed to load initial database: {e}");
@@ -222,9 +231,10 @@ async fn main() {
 async fn get_asns(
     db_url: &str,
     http_client: Option<&reqwest::Client>,
+    cache_file: Option<PathBuf>,
 ) -> Result<Asns, &'static str> {
     info!("Retrieving ASNs");
-    let asns = Asns::new(db_url, http_client)
+    let asns = Asns::new(db_url, http_client, cache_file)
         .await
         .map_err(|_| "ASNs load failed")?;
     info!("ASNs loaded");

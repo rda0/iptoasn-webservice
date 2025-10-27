@@ -7,6 +7,8 @@ use std::net::IpAddr;
 use std::ops::Bound::{Included, Unbounded};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::{env, fs};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub struct Asn {
@@ -54,7 +56,52 @@ pub struct Asns {
 }
 
 impl Asns {
-    fn try_load_fallback() -> Result<Vec<u8>, &'static str> {
+    const CACHE_FILE_NAME: &'static str = "ip2asn-combined.tsv.gz";
+    const CACHE_SUBDIR: &'static str = "iptoasn";
+
+    fn default_cache_file_path() -> Option<PathBuf> {
+        if let Ok(xdg_cache) = env::var("XDG_CACHE_HOME") {
+            return Some(PathBuf::from(xdg_cache)
+                .join(Self::CACHE_SUBDIR)
+                .join(Self::CACHE_FILE_NAME));
+        }
+        if let Some(home_dir) = home::home_dir() {
+            return Some(home_dir
+                .join(".cache")
+                .join(Self::CACHE_SUBDIR)
+                .join(Self::CACHE_FILE_NAME));
+        }
+        None
+    }
+
+    fn try_load_fallback(cache_file: Option<&Path>) -> Result<Vec<u8>, &'static str> {
+        // 1) CLI-provided cache path
+        if let Some(cf) = cache_file {
+            match fs::read(cf) {
+                Ok(content) => {
+                    info!("Successfully loaded fallback data from: {}", cf.display());
+                    return Ok(content);
+                }
+                Err(_) => {
+                    debug!("Fallback file not found: {}", cf.display());
+                }
+            }
+        }
+
+        // 2) Default XDG-based cache path
+        if let Some(def) = Self::default_cache_file_path() {
+            match fs::read(&def) {
+                Ok(content) => {
+                    info!("Successfully loaded fallback data from: {}", def.display());
+                    return Ok(content);
+                }
+                Err(_) => {
+                    debug!("Fallback file not found: {}", def.display());
+                }
+            }
+        }
+
+        // 3) Legacy/local development fallback paths for backward compatibility
         let fallback_paths = [
             "cache/ip2asn-combined.tsv.gz",
             "ip2asn-combined.tsv.gz",
@@ -62,7 +109,7 @@ impl Asns {
         ];
 
         for path in &fallback_paths {
-            if let Ok(content) = std::fs::read(path) {
+            if let Ok(content) = fs::read(path) {
                 info!("Successfully loaded fallback data from: {}", path);
                 return Ok(content);
             } else {
@@ -76,6 +123,7 @@ impl Asns {
     pub async fn new(
         url: &str,
         http_client: Option<&reqwest::Client>,
+        cache_file: Option<PathBuf>,
     ) -> Result<Self, &'static str> {
         info!("Loading the database from {}", url);
 
@@ -118,7 +166,7 @@ impl Asns {
                         error!("Unable to load the database, status: {}", res.status());
                         warn!("HTTP request failed, attempting to use cached data");
 
-                        return match Self::try_load_fallback() {
+                        return match Self::try_load_fallback(cache_file.as_deref()) {
                             Ok(content) => Self::parse_data(content),
                             Err(_) => {
                                 Err("Unable to load the database and no fallback data available")
@@ -139,7 +187,7 @@ impl Asns {
                     error!("Failed to send request: {}", e);
                     warn!("Network request failed, attempting to use cached data");
 
-                    return match Self::try_load_fallback() {
+                    return match Self::try_load_fallback(cache_file.as_deref()) {
                         Ok(content) => Self::parse_data(content),
                         Err(msg) => {
                             error!("{}", msg);
@@ -155,23 +203,31 @@ impl Asns {
 
         // Save successful download to cache
         if url.starts_with("http://") || url.starts_with("https://") {
-            Self::save_to_cache(&bytes);
+            Self::save_to_cache(&bytes, cache_file.as_deref());
         }
 
         Self::parse_data(bytes)
     }
 
-    fn save_to_cache(bytes: &[u8]) {
-        // Create cache directory if it doesn't exist
-        if let Err(e) = std::fs::create_dir_all("cache") {
-            warn!("Failed to create cache directory: {}", e);
+    fn save_to_cache(bytes: &[u8], cache_file: Option<&Path>) {
+        let target_path = cache_file
+            .map(|p| p.to_path_buf())
+            .or_else(Self::default_cache_file_path);
+        let Some(path) = target_path else {
+            warn!("No cache path available; skipping cache save");
             return;
+        };
+
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                warn!("Failed to create cache directory {}: {}", parent.display(), e);
+                return;
+            }
         }
 
-        // Save the downloaded data to cache
-        match std::fs::write("cache/ip2asn-combined.tsv.gz", bytes) {
-            Ok(()) => info!("Successfully cached database to cache/ip2asn-combined.tsv.gz"),
-            Err(e) => warn!("Failed to cache database: {}", e),
+        match fs::write(&path, bytes) {
+            Ok(()) => info!("Successfully cached database to {}", path.display()),
+            Err(e) => warn!("Failed to cache database to {}: {}", path.display(), e),
         }
     }
 
