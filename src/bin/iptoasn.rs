@@ -18,10 +18,10 @@ use iptoasn_webservice::asns::Asns;
 async fn main() {
     env_logger::init();
 
-    let matches = Command::new("iptoasn-weblog")
+    let matches = Command::new("iptoasn")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Sven Mäder <maeder@phys.ethz.ch>")
-        .about("Annotate Apache/nginx logs with ASN info for client IPs")
+        .about("Annotate IP addresses with ASN info")
         .arg(
             Arg::new("db_url")
                 .short('u')
@@ -35,7 +35,7 @@ async fn main() {
                 .short('i')
                 .long("input")
                 .value_name("path")
-                .help("Path to input log file (defaults to stdin)"),
+                .help("Path to input file (defaults to stdin)"),
         )
         .arg(
             Arg::new("description")
@@ -53,6 +53,7 @@ async fn main() {
         )
         .arg(
             Arg::new("as_markers")
+                .short('m')
                 .long("as-markers")
                 .value_name("pair")
                 .help("Two characters: opening and closing marker for AS info (e.g., [] or <>)")
@@ -60,6 +61,7 @@ async fn main() {
         )
         .arg(
             Arg::new("as_sep")
+                .short('s')
                 .long("as-sep")
                 .value_name("str")
                 .help("Delimiter between AS info fields")
