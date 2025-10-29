@@ -55,6 +55,13 @@ impl IpLookupResponse {
     }
 }
 
+#[derive(Serialize)]
+struct AsNameResponse {
+    as_number: u32,
+    as_country_code: String,
+    as_description: String,
+}
+
 pub struct WebService;
 
 impl WebService {
@@ -75,6 +82,31 @@ impl WebService {
             (&Method::GET, path) if path.starts_with("/v1/as/ip/") => {
                 let ip_s = path.strip_prefix("/v1/as/ip/").unwrap_or("");
                 Self::ip_lookup(ip_s, req.headers(), asns_arc)
+            }
+            (&Method::GET, "/v1/as/n") => {
+                // No AS number provided
+                let accept = Self::accept_type(req.headers());
+                let mut resp = match accept {
+                    OutputType::Plain => Response::new(Full::new(Bytes::from(
+                        "Missing AS number. Use /v1/as/n/<AS123> or /v1/as/n/<123>\n",
+                    ))),
+                    _ => Response::new(Full::new(Bytes::from(
+                        r#"{"error":"Missing AS number. Use /v1/as/n/<AS123> or /v1/as/n/<123>"}"#,
+                    ))),
+                };
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static(match accept {
+                        OutputType::Plain => "text/plain; charset=utf-8",
+                        _ => "application/json; charset=utf-8",
+                    }),
+                );
+                Ok(resp)
+            }
+            (&Method::GET, path) if path.starts_with("/v1/as/n/") => {
+                let asn_s = path.strip_prefix("/v1/as/n/").unwrap_or("");
+                Self::as_name_lookup(asn_s, req.headers(), asns_arc)
             }
             (&Method::PUT, "/v1/as/ips") => Self::handle_put_ips(req, asns_arc).await,
             _ => {
@@ -122,6 +154,9 @@ impl WebService {
                 }
                 if accept_str.contains("text/plain") {
                     return OutputType::Plain;
+                }
+                if accept_str.contains("text/html") {
+                    return OutputType::Html;
                 }
             }
         }
@@ -512,6 +547,173 @@ impl WebService {
             _ => Self::output_json_vec(&results),
         };
         *response.status_mut() = StatusCode::OK;
+        Ok(response)
+    }
+
+    fn parse_as_number(input: &str) -> Option<u32> {
+        let s = input.trim();
+        let s = s
+            .strip_prefix("AS")
+            .or_else(|| s.strip_prefix("as"))
+            .unwrap_or(s);
+        u32::from_str(s).ok()
+    }
+
+    fn output_as_name_json(resp: &AsNameResponse) -> Response<Full<Bytes>> {
+        let json = serde_json::to_string(resp).unwrap();
+        let mut response = Response::new(Full::new(Bytes::from(json)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+
+    fn output_as_name_plain(resp: &AsNameResponse) -> Response<Full<Bytes>> {
+        // New format: "559 | CH | SWITCH Switch, Swiss Academic and Research Network"
+        let plain = format!(
+            "{} | {} | {}",
+            resp.as_number, resp.as_country_code, resp.as_description
+        );
+        let mut response = Response::new(Full::new(Bytes::from(plain)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_as_name_html(resp: &AsNameResponse) -> Response<Full<Bytes>> {
+        // Same overall template as output_html(), but only the required fields for AS lookup
+        let html = html! {
+            head {
+                title : "iptoasn lookup";
+                meta(name="viewport", content="width=device-width, initial-scale=1");
+                link(rel="stylesheet", href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-alpha.5/css/bootstrap.min.css", integrity="sha384-AysaV+vQoT3kOAXZkl02PThvDr8HYKPZhNT5h/CXfBThSRXQ6jW5DO2ekP5ViFdi", crossorigin="anonymous");
+                style : "body { margin: 1em 4em }";
+            }
+            body(class="container-fluid") {
+                header {
+                    h1 : format_args!("Information for AS number: AS{}", resp.as_number);
+                }
+                table {
+                    tr {
+                        th : "AS Number";
+                        td : format_args!("AS{}", resp.as_number);
+                    }
+                    tr {
+                        th : "AS Country Code";
+                        td : &resp.as_country_code;
+                    }
+                    tr {
+                        th : "AS Description";
+                        td : &resp.as_description;
+                    }
+                }
+                footer {
+                    p { small {
+                        : "Powered by ";
+                        a(href="https://iptoasn.com") : "iptoasn.com";
+                    } }
+                }
+            }
+        }
+        .into_string()
+        .unwrap();
+        let html = format!("<!DOCTYPE html>\n<html>{html}</html>");
+
+        let mut response = Response::new(Full::new(Bytes::from(html)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn as_name_lookup(
+        asn_s: &str,
+        headers: &HeaderMap,
+        asns_arc: Arc<RwLock<Arc<Asns>>>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let output_type = Self::accept_type(headers);
+
+        let number = match Self::parse_as_number(asn_s) {
+            Some(n) => n,
+            None => {
+                let mut resp = match output_type {
+                    OutputType::Plain => Response::new(Full::new(Bytes::from(
+                        "Invalid AS number. Use AS123 or 123\n",
+                    ))),
+                    OutputType::Html => {
+                        let html = "<!DOCTYPE html><html><body><p>Invalid AS number. Use AS123 or 123</p></body></html>";
+                        let mut r = Response::new(Full::new(Bytes::from(html)));
+                        r.headers_mut().insert(
+                            CONTENT_TYPE,
+                            HeaderValue::from_static("text/html; charset=utf-8"),
+                        );
+                        r
+                    }
+                    _ => Response::new(Full::new(Bytes::from(
+                        r#"{"error":"Invalid AS number. Use AS123 or 123"}"#,
+                    ))),
+                };
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                if !resp.headers().contains_key(CONTENT_TYPE) {
+                    resp.headers_mut().insert(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("application/json; charset=utf-8"),
+                    );
+                }
+                return Ok(resp);
+            }
+        };
+
+        let asns = asns_arc.read().unwrap().clone();
+        let Some((country, description)) = asns.lookup_meta_by_asn(number) else {
+            let mut resp = match output_type {
+                OutputType::Plain => Response::new(Full::new(Bytes::from("AS number not found\n"))),
+                OutputType::Html => {
+                    let html = "<!DOCTYPE html><html><body><p>AS number not found</p></body></html>";
+                    let mut r = Response::new(Full::new(Bytes::from(html)));
+                    r.headers_mut().insert(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("text/html; charset=utf-8"),
+                    );
+                    r
+                }
+                _ => Response::new(Full::new(Bytes::from(
+                    r#"{"error":"AS number not found"}"#,
+                ))),
+            };
+            *resp.status_mut() = StatusCode::NOT_FOUND;
+            if !resp.headers().contains_key(CONTENT_TYPE) {
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+            }
+            return Ok(resp);
+        };
+
+        let resp = AsNameResponse {
+            as_number: number,
+            as_country_code: country.to_string(),
+            as_description: description.to_string(),
+        };
+
+        let response = match output_type {
+            OutputType::Plain => Self::output_as_name_plain(&resp),
+            OutputType::Html => Self::output_as_name_html(&resp),
+            _ => Self::output_as_name_json(&resp),
+        };
+
         Ok(response)
     }
 

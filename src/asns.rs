@@ -53,6 +53,7 @@ impl Asn {
 
 pub struct Asns {
     asns: BTreeSet<Asn>,
+    asn_meta: HashMap<u32, (Arc<str>, Arc<str>)>,
 }
 
 impl Asns {
@@ -246,6 +247,8 @@ impl Asns {
         let mut description_pool: HashMap<String, Arc<str>> = HashMap::new();
 
         let mut asns = BTreeSet::new();
+        let mut asn_meta: HashMap<u32, (Arc<str>, Arc<str>)> = HashMap::new();
+
         for line in data.split_terminator('\n') {
             if line.trim().is_empty() {
                 continue;
@@ -291,10 +294,13 @@ impl Asns {
                 first_ip,
                 last_ip,
                 number,
-                country,
-                description,
+                country: country.clone(),
+                description: description.clone(),
             };
             asns.insert(asn);
+
+            // Store AS meta (country + description) if not already present
+            asn_meta.entry(number).or_insert_with(|| (country, description));
         }
 
         info!(
@@ -303,7 +309,7 @@ impl Asns {
             country_pool.len(),
             description_pool.len()
         );
-        Ok(Self { asns })
+        Ok(Self { asns, asn_meta })
     }
 
     pub fn lookup_by_ip(&self, ip: IpAddr) -> Option<&Asn> {
@@ -312,5 +318,11 @@ impl Asns {
             Some(found) if ip <= found.last_ip && found.number > 0 => Some(found),
             _ => None,
         }
+    }
+
+    pub fn lookup_meta_by_asn(&self, number: u32) -> Option<(Arc<str>, Arc<str>)> {
+        self.asn_meta
+            .get(&number)
+            .map(|(cc, desc)| (cc.clone(), desc.clone()))
     }
 }
