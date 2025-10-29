@@ -99,7 +99,7 @@ xh http://localhost:53661/v1/as/ip/8.8.8.8 Accept:text/plain
 Returns a plaintext response in the format:
 
 ```
-15169 | 8.8.8.0-8.8.8.255 | GOOGLE, US
+15169 | 8.8.8.0-8.8.8.255 | US | GOOGLE
 ```
 
 ### Bulk IP JSON Response
