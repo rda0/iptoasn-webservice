@@ -56,6 +56,8 @@ cargo build --release
   - Lookup requester's IP address, prioritized as X-Real-IP > X-Forwarded-For > Request IP
 - `/v1/as/ips`
   - Bulk lookup provided list of IP addresses
+- `/v1/as/n/<as number>`
+  - Lookup provided AS number
 
 ### JSON Response
 
@@ -161,6 +163,28 @@ For IP addresses not found in BGP announcements:
   "announced": false,
   "ip": "127.0.0.1"
 }
+```
+
+### AS Number lookup
+
+ASNs can be provided in format `15169` or `AS15169`:
+
+```sh
+curl -H'Accept: application/json' http://localhost:53661/v1/as/n/15169
+xh http://localhost:53661/v1/as/n/AS15169 Accept:application/json
+```
+
+Or for a plaintext response:
+
+```sh
+curl -H'Accept: text/plain' http://localhost:53661/v1/as/n/15169
+xh http://localhost:53661/v1/as/n/15169 Accept:text/plain
+```
+
+Response format:
+
+```
+15169 | US | GOOGLE
 ```
 
 ## Data Source
