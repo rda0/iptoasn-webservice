@@ -289,16 +289,16 @@ impl WebService {
     fn output_plain(response: &IpLookupResponse) -> Response<Full<Bytes>> {
         let plain = if response.announced {
             format!(
-                "{} | {}-{} | {}, {}",
+                "{} | {}-{} | {} | {}",
                 response.as_number.unwrap(),
                 response.first_ip.as_deref().unwrap(),
                 response.last_ip.as_deref().unwrap(),
-                response.as_description.as_deref().unwrap(),
-                response.as_country_code.as_deref().unwrap()
+                response.as_country_code.as_deref().unwrap(),
+                response.as_description.as_deref().unwrap()
             )
         } else {
             // Consistent with output_plain_vec()'s "Not announced" representation
-            format!("- | {} | Not announced", response.ip)
+            format!("- | {} | - | Not announced", response.ip)
         };
 
         let mut response = Response::new(Full::new(Bytes::from(plain)));
