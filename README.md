@@ -27,7 +27,15 @@ This is the source code of the (previously) public API from [iptoasn.com](https:
 cargo build --release
 ```
 
+To change the compile time default for the DB URL:
+
+```sh
+IPTOASN_DB_URL="https://example.com/data/ip2asn-combined.tsv.gz" cargo build --release
+```
+
 ### Run the server
+
+Examples:
 
 ```sh
 # Default configuration (listen on 127.0.0.1:53661, refresh every 60 minutes)
@@ -40,11 +48,60 @@ cargo build --release
   --refresh 120
 ```
 
-### Command line options
+Usage:
 
-- `--listen` (`-l`): Address and port to bind to (default: `127.0.0.1:53661`)
-- `--dburl` (`-u`): Database URL to download from (default: `https://iptoasn.com/data/ip2asn-combined.tsv.gz`)
-- `--refresh` (`-r`): Database refresh interval in minutes, 0 to disable (default: `60`)
+```sh
+target/release/iptoasn-webservice -h
+IP to ASN webservice
+
+Usage: iptoasn-webservice [OPTIONS]
+
+Options:
+  -l, --listen <listen_addr>     Address:port to listen to [default: 127.0.0.1:53661]
+  -c, --cache-file <path>        Path to cache file [default: cache/ip2asn-combined.tsv.gz]
+  -u, --dburl <db_url>           URL of the database [env: IPTOASN_DB_URL=] [default:
+                                 https://iptoasn.com/data/ip2asn-combined.tsv.gz]
+  -r, --refresh <refresh_delay>  Database refresh delay (minutes, 0 to disable) [default: 60]
+  -h, --help                     Print help
+  -V, --version                  Print version
+```
+
+### Use the CLI tool
+
+The CLI tool can be used to annotate IP addresses in log files (i.e. webserver logs) or output of other CLI tools
+(i.e. `ss`) with AS info (AS number, AS country code and optional AS description).
+
+Examples:
+
+```sh
+tail -f /var/log/apache2/access.log | iptoasn -dl
+iptoasn -di /var/log/apache2/access.log
+
+8.8.8.8 [AS15169, US, GOOGLE] - - [27/Oct/2025:12:10:13 +0100] "GET /dns/root.hints HTTP/1.1" 500 3510 839 2729 "-" "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" TLSv1.3 TLS_AES_128_GCM_SHA256 Initial
+```
+
+Usage:
+
+```sh
+cp target/release/iptoasn /usr/local/bin
+iptoasn -h
+Annotate IP addresses with ASN info
+
+Usage: iptoasn [OPTIONS]
+
+Options:
+  -u, --dburl <db_url>     URL of the database [env: IPTOASN_DB_URL=] [default: https://iptoasn.com/data/ip2asn-combined.tsv.gz]
+  -c, --cache-file <path>  Override path to cache file
+                           (default: $XDG_CACHE_HOME/iptoasn/ip2asn-combined.tsv.gz
+                           or ~/.cache/iptoasn/ip2asn-combined.tsv.gz)
+  -i, --input <path>       Path to input file (defaults to stdin)
+  -d, --description        Include AS description in annotations
+  -l, --line-buffered      Flush each output line immediately when reading from stdin
+  -m, --as-markers <pair>  Two characters: opening and closing marker for AS info (e.g., [] or <>) [default: []]
+  -s, --as-sep <str>       Delimiter between AS info fields [default: ", "]
+  -h, --help               Print help
+  -V, --version            Print version
+```
 
 ## API Usage
 
