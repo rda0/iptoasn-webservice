@@ -335,4 +335,15 @@ impl Asns {
             .map(|a| (a.first_ip, a.last_ip))
             .collect()
     }
+
+    // Enumerate all ASNs known in the meta index, sorted by AS number.
+    pub fn enumerate_asn_meta(&self) -> Vec<(u32, Arc<str>, Arc<str>)> {
+        let mut v: Vec<(u32, Arc<str>, Arc<str>)> = self
+            .asn_meta
+            .iter()
+            .map(|(&n, (cc, desc))| (n, cc.clone(), desc.clone()))
+            .collect();
+        v.sort_unstable_by_key(|x| x.0);
+        v
+    }
 }

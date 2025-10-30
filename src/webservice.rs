@@ -56,7 +56,7 @@ impl IpLookupResponse {
 }
 
 #[derive(Serialize)]
-struct AsNameResponse {
+struct AsMetaResponse {
     as_number: u32,
     as_country_code: String,
     as_description: String,
@@ -109,6 +109,7 @@ impl WebService {
                 );
                 Ok(resp)
             }
+            (&Method::GET, "/v1/as/ns") => Self::as_meta_list(req.headers(), asns_arc),
             (&Method::GET, path) if path.starts_with("/v1/as/n/") && path.ends_with("/subnets") => {
                 let asn_s = path.strip_prefix("/v1/as/n/").unwrap_or("");
                 let asn_s = asn_s.strip_suffix("/subnets").unwrap_or(asn_s);
@@ -116,7 +117,7 @@ impl WebService {
             }
             (&Method::GET, path) if path.starts_with("/v1/as/n/") => {
                 let asn_s = path.strip_prefix("/v1/as/n/").unwrap_or("");
-                Self::as_name_lookup(asn_s, req.headers(), asns_arc)
+                Self::as_meta_lookup(asn_s, req.headers(), asns_arc)
             }
             (&Method::PUT, "/v1/as/ips") => Self::handle_put_ips(req, asns_arc).await,
             _ => {
@@ -568,7 +569,7 @@ impl WebService {
         u32::from_str(s).ok()
     }
 
-    fn output_as_name_json(resp: &AsNameResponse) -> Response<Full<Bytes>> {
+    fn output_as_meta_json(resp: &AsMetaResponse) -> Response<Full<Bytes>> {
         let json = serde_json::to_string(resp).unwrap();
         let mut response = Response::new(Full::new(Bytes::from(json)));
         response.headers_mut().insert(
@@ -580,7 +581,7 @@ impl WebService {
         response
     }
 
-    fn output_as_name_plain(resp: &AsNameResponse) -> Response<Full<Bytes>> {
+    fn output_as_meta_plain(resp: &AsMetaResponse) -> Response<Full<Bytes>> {
         let plain = format!(
             "{} | {} | {}",
             resp.as_number, resp.as_country_code, resp.as_description
@@ -595,7 +596,7 @@ impl WebService {
         response
     }
 
-    fn output_as_name_html(resp: &AsNameResponse) -> Response<Full<Bytes>> {
+    fn output_as_meta_html(resp: &AsMetaResponse) -> Response<Full<Bytes>> {
         let html = html! {
             head {
                 title : "iptoasn lookup";
@@ -643,7 +644,7 @@ impl WebService {
         response
     }
 
-    fn as_name_lookup(
+    fn as_meta_lookup(
         asn_s: &str,
         headers: &HeaderMap,
         asns_arc: Arc<RwLock<Arc<Asns>>>,
@@ -684,13 +685,13 @@ impl WebService {
         let asns = asns_arc.read().unwrap().clone();
 
         let resp = if let Some((country, description)) = asns.lookup_meta_by_asn(number) {
-            AsNameResponse {
+            AsMetaResponse {
                 as_number: number,
                 as_country_code: country.to_string(),
                 as_description: description.to_string(),
             }
         } else {
-            AsNameResponse {
+            AsMetaResponse {
                 as_number: number,
                 as_country_code: "None".to_string(),
                 as_description: "Not found".to_string(),
@@ -698,9 +699,116 @@ impl WebService {
         };
 
         let response = match output_type {
-            OutputType::Plain => Self::output_as_name_plain(&resp),
-            OutputType::Html => Self::output_as_name_html(&resp),
-            _ => Self::output_as_name_json(&resp),
+            OutputType::Plain => Self::output_as_meta_plain(&resp),
+            OutputType::Html => Self::output_as_meta_html(&resp),
+            _ => Self::output_as_meta_json(&resp),
+        };
+
+        Ok(response)
+    }
+
+    fn output_as_meta_list_json(items: &[AsMetaResponse]) -> Response<Full<Bytes>> {
+        let json = serde_json::to_string(items).unwrap();
+        let mut response = Response::new(Full::new(Bytes::from(json)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_as_meta_list_plain(items: &[AsMetaResponse]) -> Response<Full<Bytes>> {
+        let mut out = String::with_capacity(items.len() * 32);
+        for item in items {
+            out.push_str(&format!(
+                "{} | {} | {}\n",
+                item.as_number, item.as_country_code, item.as_description
+            ));
+        }
+        let mut response = Response::new(Full::new(Bytes::from(out)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_as_meta_list_html(items: &[AsMetaResponse]) -> Response<Full<Bytes>> {
+        let html = html! {
+            head {
+                title : "iptoasn AS list";
+                meta(name="viewport", content="width=device-width, initial-scale=1");
+                link(rel="stylesheet", href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-alpha.5/css/bootstrap.min.css", integrity="sha384-AysaV+vQoT3kOAXZkl02PThvDr8HYKPZhNT5h/CXfBThSRXQ6jW5DO2ekP5ViFdi", crossorigin="anonymous");
+                style : "body { margin: 1em 4em } table { width: 100%; } th, td { padding: .25em .5em; }";
+            }
+            body(class="container-fluid") {
+                header {
+                    h1 : "All ASNs";
+                }
+                table(class="table table-sm table-striped") {
+                    thead {
+                        tr {
+                            th : "AS Number";
+                            th : "AS Country Code";
+                            th : "AS Description";
+                        }
+                    }
+                    tbody {
+                        @ for item in items {
+                            tr {
+                                td : format_args!("AS{}", item.as_number);
+                                td : &item.as_country_code;
+                                td : &item.as_description;
+                            }
+                        }
+                    }
+                }
+                footer {
+                    p { small {
+                        : "Powered by ";
+                        a(href="https://iptoasn.com") : "iptoasn.com";
+                    } }
+                }
+            }
+        }.into_string().unwrap();
+        let html = format!("<!DOCTYPE html>\n<html>{html}</html>");
+
+        let mut response = Response::new(Full::new(Bytes::from(html)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn as_meta_list(
+        headers: &HeaderMap,
+        asns_arc: Arc<RwLock<Arc<Asns>>>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let output_type = Self::accept_type(headers);
+
+        let asns = asns_arc.read().unwrap().clone();
+        let all = asns.enumerate_asn_meta();
+
+        let items: Vec<AsMetaResponse> = all
+            .into_iter()
+            .map(|(n, cc, desc)| AsMetaResponse {
+                as_number: n,
+                as_country_code: cc.to_string(),
+                as_description: desc.to_string(),
+            })
+            .collect();
+
+        let response = match output_type {
+            OutputType::Plain => Self::output_as_meta_list_plain(&items),
+            OutputType::Html => Self::output_as_meta_list_html(&items),
+            _ => Self::output_as_meta_list_json(&items),
         };
 
         Ok(response)
