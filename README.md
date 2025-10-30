@@ -58,6 +58,8 @@ cargo build --release
   - Bulk lookup provided list of IP addresses
 - `/v1/as/n/<as number>`
   - Lookup provided AS number
+- `/v1/as/n/<as number>/subnets`
+  - Returns all known subnets of a given AS number
 
 ### JSON Response
 
@@ -186,6 +188,41 @@ Response format:
 ```
 15169 | US | GOOGLE
 ```
+
+### AS Subnets lookup
+
+This endpoint returns all IP subnets of a given AS in CIDR format:
+
+```sh
+curl -H'Accept: application/json' http://localhost:53661/v1/as/n/15169/subnets
+xh http://localhost:53661/v1/as/n/AS15169/subnets Accept:application/json
+
+{
+    "as_number": 15169,
+    "subnets": [
+        "8.8.4.0/24",
+        "8.8.8.0/24",
+        ...
+    ]
+}
+```
+
+Or as plaintext:
+
+```sh
+curl -H'Accept: text/plain' http://localhost:53661/v1/as/n/15169/subnets
+xh http://localhost:53661/v1/as/n/15169/subnets Accept:text/plain
+
+8.8.4.0/24
+8.8.8.0/24
+...
+```
+
+Note: These subnets are not necessarily exactly the same as the announced prefixes in BGP,
+because the subnets may contain multiple adjacent announced prefixes of the same AS.
+
+The in BGP announced prefixes can be queried from the ripe database:
+https://stat.ripe.net/docs/data-api/api-endpoints/announced-prefixes
 
 ## Data Source
 

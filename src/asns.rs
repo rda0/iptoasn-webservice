@@ -325,4 +325,14 @@ impl Asns {
             .get(&number)
             .map(|(cc, desc)| (cc.clone(), desc.clone()))
     }
+
+    // Build a temporary list of ranges for a given ASN by scanning the in-memory set.
+    // No persistent memory overhead; O(N) per call.
+    pub fn collect_ranges_by_asn(&self, number: u32) -> Vec<(IpAddr, IpAddr)> {
+        self.asns
+            .iter()
+            .filter(|a| a.number == number)
+            .map(|a| (a.first_ip, a.last_ip))
+            .collect()
+    }
 }
