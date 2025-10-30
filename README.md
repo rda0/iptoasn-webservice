@@ -35,13 +35,15 @@ IPTOASN_DB_URL="https://example.com/data/ip2asn-combined.tsv.gz" cargo build --r
 
 ### Run the server
 
-Examples:
+Example using default configuration (listen on `127.0.0.1:53661`, refresh every `60` minutes):
 
 ```sh
-# Default configuration (listen on 127.0.0.1:53661, refresh every 60 minutes)
 ./target/release/iptoasn-webservice
+```
 
-# Custom configuration
+Example using custom configuration:
+
+```sh
 ./target/release/iptoasn-webservice \
   --listen 0.0.0.0:8080 \
   --dburl https://iptoasn.com/data/ip2asn-combined.tsv.gz \
@@ -115,6 +117,8 @@ Options:
   - Bulk lookup provided list of IP addresses
 - `/v1/as/n/<as number>`
   - Lookup provided AS number
+- `/v1/as/ns`
+  - Returns all known AS numbers
 - `/v1/as/n/<as number>/subnets`
   - Returns all known subnets of a given AS number
 
@@ -244,6 +248,20 @@ Response format:
 
 ```
 15169 | US | GOOGLE
+```
+
+### AS Numbers lookup
+
+This endpoint returns all known AS numbers:
+
+```sh
+curl -sH'Accept: text/plain' http://localhost:53661/v1/as/ns | rg -S google
+xh http://localhost:53661/v1/as/ns Accept:text/plain | rg -S google
+15169 | US | GOOGLE
+16550 | US | GOOGLE-PRIVATE-CLOUD
+16591 | US | GOOGLE-FIBER
+19527 | US | GOOGLE-2
+...
 ```
 
 ### AS Subnets lookup
