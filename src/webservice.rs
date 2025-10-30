@@ -9,7 +9,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use time::macros::format_description;
@@ -62,6 +62,12 @@ struct AsNameResponse {
     as_description: String,
 }
 
+#[derive(Serialize)]
+struct AsSubnetsResponse {
+    as_number: u32,
+    subnets: Vec<String>,
+}
+
 pub struct WebService;
 
 impl WebService {
@@ -84,7 +90,6 @@ impl WebService {
                 Self::ip_lookup(ip_s, req.headers(), asns_arc)
             }
             (&Method::GET, "/v1/as/n") => {
-                // No AS number provided
                 let accept = Self::accept_type(req.headers());
                 let mut resp = match accept {
                     OutputType::Plain => Response::new(Full::new(Bytes::from(
@@ -103,6 +108,11 @@ impl WebService {
                     }),
                 );
                 Ok(resp)
+            }
+            (&Method::GET, path) if path.starts_with("/v1/as/n/") && path.ends_with("/subnets") => {
+                let asn_s = path.strip_prefix("/v1/as/n/").unwrap_or("");
+                let asn_s = asn_s.strip_suffix("/subnets").unwrap_or(asn_s);
+                Self::as_subnets_lookup(asn_s, req.headers(), asns_arc)
             }
             (&Method::GET, path) if path.starts_with("/v1/as/n/") => {
                 let asn_s = path.strip_prefix("/v1/as/n/").unwrap_or("");
@@ -297,7 +307,6 @@ impl WebService {
                 response.as_description.as_deref().unwrap()
             )
         } else {
-            // Consistent with output_plain_vec()'s "Not announced" representation
             format!("- | {} | - | Not announced", response.ip)
         };
 
@@ -571,9 +580,7 @@ impl WebService {
         response
     }
 
-
     fn output_as_name_plain(resp: &AsNameResponse) -> Response<Full<Bytes>> {
-        // New format: "559 | CH | SWITCH Switch, Swiss Academic and Research Network"
         let plain = format!(
             "{} | {} | {}",
             resp.as_number, resp.as_country_code, resp.as_description
@@ -589,7 +596,6 @@ impl WebService {
     }
 
     fn output_as_name_html(resp: &AsNameResponse) -> Response<Full<Bytes>> {
-        // Same overall template as output_html(), but only the required fields for AS lookup
         let html = html! {
             head {
                 title : "iptoasn lookup";
@@ -676,36 +682,19 @@ impl WebService {
         };
 
         let asns = asns_arc.read().unwrap().clone();
-        let Some((country, description)) = asns.lookup_meta_by_asn(number) else {
-            let mut resp = match output_type {
-                OutputType::Plain => Response::new(Full::new(Bytes::from("AS number not found\n"))),
-                OutputType::Html => {
-                    let html = "<!DOCTYPE html><html><body><p>AS number not found</p></body></html>";
-                    let mut r = Response::new(Full::new(Bytes::from(html)));
-                    r.headers_mut().insert(
-                        CONTENT_TYPE,
-                        HeaderValue::from_static("text/html; charset=utf-8"),
-                    );
-                    r
-                }
-                _ => Response::new(Full::new(Bytes::from(
-                    r#"{"error":"AS number not found"}"#,
-                ))),
-            };
-            *resp.status_mut() = StatusCode::NOT_FOUND;
-            if !resp.headers().contains_key(CONTENT_TYPE) {
-                resp.headers_mut().insert(
-                    CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
-                );
-            }
-            return Ok(resp);
-        };
 
-        let resp = AsNameResponse {
-            as_number: number,
-            as_country_code: country.to_string(),
-            as_description: description.to_string(),
+        let resp = if let Some((country, description)) = asns.lookup_meta_by_asn(number) {
+            AsNameResponse {
+                as_number: number,
+                as_country_code: country.to_string(),
+                as_description: description.to_string(),
+            }
+        } else {
+            AsNameResponse {
+                as_number: number,
+                as_country_code: "None".to_string(),
+                as_description: "Not found".to_string(),
+            }
         };
 
         let response = match output_type {
@@ -715,6 +704,246 @@ impl WebService {
         };
 
         Ok(response)
+    }
+
+    fn as_subnets_lookup(
+        asn_s: &str,
+        headers: &HeaderMap,
+        asns_arc: Arc<RwLock<Arc<Asns>>>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let output_type = Self::accept_type(headers);
+
+        let number = match Self::parse_as_number(asn_s) {
+            Some(n) => n,
+            None => {
+                let mut resp = match output_type {
+                    OutputType::Plain => Response::new(Full::new(Bytes::from(
+                        "Invalid AS number. Use AS123 or 123\n",
+                    ))),
+                    OutputType::Html => {
+                        let html = "<!DOCTYPE html><html><body><p>Invalid AS number. Use AS123 or 123</p></body></html>";
+                        let mut r = Response::new(Full::new(Bytes::from(html)));
+                        r.headers_mut().insert(
+                            CONTENT_TYPE,
+                            HeaderValue::from_static("text/html; charset=utf-8"),
+                        );
+                        r
+                    }
+                    _ => Response::new(Full::new(Bytes::from(
+                        r#"{"error":"Invalid AS number. Use AS123 or 123"}"#,
+                    ))),
+                };
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                if !resp.headers().contains_key(CONTENT_TYPE) {
+                    resp.headers_mut().insert(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("application/json; charset=utf-8"),
+                    );
+                }
+                return Ok(resp);
+            }
+        };
+
+        // For AS0 (all not routed ranges) return an empty subnet list to avoid
+        // trying to enumerate the complement of the routing table.
+        if number == 0 {
+            let subnets: Vec<String> = Vec::new();
+            let response = match output_type {
+                OutputType::Plain => Self::output_as_subnets_plain(&subnets),
+                OutputType::Html => Self::output_as_subnets_html(number, &subnets),
+                _ => {
+                    let resp = AsSubnetsResponse { as_number: number, subnets };
+                    Self::output_as_subnets_json(&resp)
+                }
+            };
+            return Ok(response);
+        }
+
+        let asns = asns_arc.read().unwrap().clone();
+
+        // If ASN is not found, return 200 with empty subnets.
+        if asns.lookup_meta_by_asn(number).is_none() {
+            let subnets: Vec<String> = Vec::new();
+            let response = match output_type {
+                OutputType::Plain => Self::output_as_subnets_plain(&subnets),
+                OutputType::Html => Self::output_as_subnets_html(number, &subnets),
+                _ => {
+                    let resp = AsSubnetsResponse { as_number: number, subnets };
+                    Self::output_as_subnets_json(&resp)
+                }
+            };
+            return Ok(response);
+        }
+
+        // Collect ranges on-demand and deaggregate to minimal CIDR set
+        let ranges = asns.collect_ranges_by_asn(number);
+        let mut subnets: Vec<String> = Vec::new();
+        for (first, last) in ranges {
+            let first_s = first.to_string();
+            let last_s = last.to_string();
+            let mut parts = Self::range_to_cidrs(&first_s, &last_s);
+            subnets.append(&mut parts);
+        }
+
+        let response = match output_type {
+            OutputType::Plain => Self::output_as_subnets_plain(&subnets),
+            OutputType::Html => Self::output_as_subnets_html(number, &subnets),
+            _ => {
+                let resp = AsSubnetsResponse { as_number: number, subnets };
+                Self::output_as_subnets_json(&resp)
+            }
+        };
+
+        Ok(response)
+    }
+
+    // Deaggregate an arbitrary inclusive range into minimal CIDR set
+    fn range_to_cidrs(first_s: &str, last_s: &str) -> Vec<String> {
+        let first = IpAddr::from_str(first_s).ok();
+        let last = IpAddr::from_str(last_s).ok();
+
+        match (first, last) {
+            (Some(IpAddr::V4(f)), Some(IpAddr::V4(l))) => {
+                let mut start = u32::from_be_bytes(f.octets());
+                let end = u32::from_be_bytes(l.octets());
+                if start > end {
+                    return vec![];
+                }
+                if start == 0 && end == u32::MAX {
+                    return vec!["0.0.0.0/0".to_string()];
+                }
+                let mut res = Vec::new();
+                while start <= end {
+                    let mut block: u32 = if start == 0 {
+                        1u32 << 31
+                    } else {
+                        1u32 << start.trailing_zeros().min(31)
+                    };
+
+                    let remaining = end - start + 1;
+                    while block > remaining {
+                        block >>= 1;
+                    }
+
+                    let prefix_len = 32 - block.trailing_zeros() as u8;
+                    let net_ip = Ipv4Addr::from(start.to_be_bytes());
+                    res.push(format!("{}/{}", net_ip, prefix_len));
+
+                    start = start.saturating_add(block);
+                    if block == 0 {
+                        break; // safety, shouldn't happen
+                    }
+                }
+                res
+            }
+            (Some(IpAddr::V6(f)), Some(IpAddr::V6(l))) => {
+                let mut start = u128::from_be_bytes(f.octets());
+                let end = u128::from_be_bytes(l.octets());
+                if start > end {
+                    return vec![];
+                }
+                if start == 0 && end == u128::MAX {
+                    return vec!["::/0".to_string()];
+                }
+                let mut res = Vec::new();
+                while start <= end {
+                    let mut block: u128 = if start == 0 {
+                        1u128 << 127
+                    } else {
+                        1u128 << start.trailing_zeros().min(127)
+                    };
+
+                    let remaining = end - start + 1;
+                    while block > remaining {
+                        block >>= 1;
+                    }
+
+                    let prefix_len = 128 - block.trailing_zeros() as u8;
+                    let net_ip = Ipv6Addr::from(start.to_be_bytes());
+                    res.push(format!("{}/{}", net_ip, prefix_len));
+
+                    start = start.saturating_add(block);
+                    if block == 0 {
+                        break; // safety, shouldn't happen
+                    }
+                }
+                res
+            }
+            _ => vec![],
+        }
+    }
+
+    fn output_as_subnets_json(resp: &AsSubnetsResponse) -> Response<Full<Bytes>> {
+        let json = serde_json::to_string(resp).unwrap();
+        let mut response = Response::new(Full::new(Bytes::from(json)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_as_subnets_html(as_number: u32, subnets: &[String]) -> Response<Full<Bytes>> {
+        // Empty list renders as an empty <pre> content
+        let body_text = if subnets.is_empty() {
+            String::new()
+        } else {
+            subnets.join("\n")
+        };
+
+        let html = html! {
+            head {
+                title : "iptoasn subnets";
+                meta(name="viewport", content="width=device-width, initial-scale=1");
+                link(rel="stylesheet", href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-alpha.5/css/bootstrap.min.css", integrity="sha384-AysaV+vQoT3kOAXZkl02PThvDr8HYKPZhNT5h/CXfBThSRXQ6jW5DO2ekP5ViFdi", crossorigin="anonymous");
+                style : "body { margin: 1em 4em }";
+            }
+            body(class="container-fluid") {
+                header {
+                    h1 : format_args!("Subnets for AS{}", as_number);
+                }
+                pre : body_text;
+                footer {
+                    p { small {
+                        : "Powered by ";
+                        a(href="https://iptoasn.com") : "iptoasn.com";
+                    } }
+                }
+            }
+        }.into_string().unwrap();
+        let html = format!("<!DOCTYPE html>\n<html>{html}</html>");
+
+        let mut response = Response::new(Full::new(Bytes::from(html)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_as_subnets_plain(subnets: &[String]) -> Response<Full<Bytes>> {
+        let text = if subnets.is_empty() {
+            String::new()
+        } else {
+            let mut s = String::new();
+            for cidr in subnets {
+                s.push_str(cidr);
+                s.push('\n');
+            }
+            s
+        };
+        let mut response = Response::new(Full::new(Bytes::from(text)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
     }
 
     pub async fn start(asns_arc: Arc<RwLock<Arc<Asns>>>, listen_addr: &str) {
