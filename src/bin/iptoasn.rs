@@ -536,12 +536,12 @@ fn annotate_ip_token(
         s.push_str(ip_s);
         s.push(' ');
         s.push_str(as_open);
-        s.push_str("NA");
+        s.push_str("AS0");
         s.push_str(as_sep);
-        s.push_str("--");
+        s.push_str("None");
         if include_description {
             s.push_str(as_sep);
-            s.push_str("local or unknown");
+            s.push_str("Not announced");
         }
         s.push_str(as_close);
         s

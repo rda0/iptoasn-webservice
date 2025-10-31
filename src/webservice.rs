@@ -308,7 +308,7 @@ impl WebService {
                 response.as_description.as_deref().unwrap()
             )
         } else {
-            format!("- | {} | - | Not announced", response.ip)
+            format!("0 | {} | None | Not announced", response.ip)
         };
 
         let mut response = Response::new(Full::new(Bytes::from(plain)));
@@ -330,7 +330,7 @@ impl WebService {
             let asn_str = if r.announced {
                 r.as_number.unwrap().to_string()
             } else {
-                "-".to_string()
+                "0".to_string()
             };
             let desc_cc = if r.announced {
                 format!("{}, {}", r.as_description.as_ref().unwrap(), r.as_country_code.as_ref().unwrap())
