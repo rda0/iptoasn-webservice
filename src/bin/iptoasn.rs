@@ -1,12 +1,13 @@
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use log::{error, info};
 use mimalloc::MiMalloc;
 use regex::Regex;
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
@@ -16,6 +17,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 use iptoasn_webservice::asns::Asns;
 use iptoasn_webservice::DEFAULT_DB_URL;
 
+const DEFAULT_SERVER_URL: &str = match option_env!("IPTOASN_SERVER_URL") {
+    Some(url) => url,
+    None => "http://127.0.0.1:53661",
+};
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -23,13 +29,70 @@ async fn main() {
     let matches = Command::new("iptoasn")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Sven Mäder <maeder@phys.ethz.ch>")
-        .about("Annotate IP addresses with ASN info")
+        .about("Annotate IP addresses with ASN info using in-memory database. Subcommands query the iptoasn webservice")
+        // Global switches for HTTP mode
+        .arg(
+            Arg::new("server")
+                .long("server")
+                .value_name("url")
+                .help("Base URL of iptoasn webservice")
+                .env("IPTOASN_SERVER_URL")
+                .default_value(DEFAULT_SERVER_URL),
+        )
+        .arg(
+            Arg::new("json")
+                .short('j')
+                .long("json")
+                .help("Use JSON format for output of subcommands (Accept: application/json)")
+                .action(ArgAction::SetTrue),
+        )
+        // Subcommands for HTTP API usage
+        .subcommand(
+            Command::new("ip")
+                .about("Lookup IP via webservice")
+                .arg(
+                    Arg::new("ip")
+                        .value_name("ip")
+                        .help("IP address (optional). If omitted, lookup requester IP")
+                        .required(false),
+                ),
+        )
+        .subcommand(
+            Command::new("ips")
+                .about("Bulk IP lookup via webservice; reads IPs from file or stdin. Input can be text/plain or JSON (auto-detected).")
+                .arg(
+                    Arg::new("file")
+                        .value_name("file")
+                        .help("Path to file with IPs; if not set, reads from stdin")
+                        .required(false),
+                ),
+        )
+        .subcommand(
+            Command::new("asn")
+                .about("AS number lookup via webservice, or subcommands")
+                .arg(
+                    Arg::new("asn")
+                        .value_name("as number")
+                        .help("AS number (e.g., 15169 or AS15169)")
+                        .required(false),
+                )
+                .subcommand(
+                    Command::new("subnets").about("List subnets of an AS").arg(
+                        Arg::new("asn")
+                            .value_name("as number")
+                            .help("AS number (e.g., 15169 or AS15169)")
+                            .required(true),
+                    ),
+                ),
+        )
+        .subcommand(Command::new("asns").about("List all AS numbers via webservice"))
+        // Original annotate-mode arguments (used when no HTTP subcommands are present)
         .arg(
             Arg::new("db_url")
                 .short('u')
                 .long("dburl")
                 .value_name("db_url")
-                .help("URL of the database")
+                .help("URL to download the in-memory database")
                 .env("IPTOASN_DB_URL")
                 .default_value(DEFAULT_DB_URL),
         )
@@ -38,7 +101,7 @@ async fn main() {
                 .short('c')
                 .long("cache-file")
                 .value_name("path")
-                .help("Override path to cache file (default: $XDG_CACHE_HOME/iptoasn/ip2asn-combined.tsv.gz or ~/.cache/iptoasn/ip2asn-combined.tsv.gz)"),
+                .help("Override path to cache file [env: $XDG_CACHE_HOME/iptoasn/] [default: ~/.cache/iptoasn/]"),
         )
         .arg(
             Arg::new("input")
@@ -52,14 +115,14 @@ async fn main() {
                 .short('d')
                 .long("description")
                 .help("Include AS description in annotations")
-                .action(clap::ArgAction::SetTrue),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("line_buffered")
                 .short('l')
                 .long("line-buffered")
                 .help("Flush each output line immediately when reading from stdin")
-                .action(clap::ArgAction::SetTrue),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("as_markers")
@@ -79,6 +142,189 @@ async fn main() {
         )
         .get_matches();
 
+    let server = matches.get_one::<String>("server").unwrap().to_string();
+    let use_json = matches.get_flag("json");
+
+    // If an HTTP API subcommand is used, run HTTP mode and exit
+    if let Some(sub_m) = matches.subcommand_matches("ip") {
+        let ip_opt = sub_m.get_one::<String>("ip").cloned();
+        if let Err(code) = http_lookup_ip(&server, use_json, ip_opt.as_deref()).await {
+            std::process::exit(code);
+        }
+        return;
+    }
+    if let Some(sub_m) = matches.subcommand_matches("ips") {
+        let file_opt = sub_m.get_one::<String>("file").cloned();
+        if let Err(code) = http_bulk_ips(&server, use_json, file_opt.as_deref()).await {
+            std::process::exit(code);
+        }
+        return;
+    }
+    if matches.subcommand_matches("asns").is_some() {
+        if let Err(code) = http_get_simple(&server, use_json, "/v1/as/ns").await {
+            std::process::exit(code);
+        }
+        return;
+    }
+    if let Some(asn_m) = matches.subcommand_matches("asn") {
+        if let Some(subnets_m) = asn_m.subcommand_matches("subnets") {
+            let asn = subnets_m.get_one::<String>("asn").unwrap();
+            let path = format!("/v1/as/n/{}/subnets", asn);
+            if let Err(code) = http_get_simple(&server, use_json, &path).await {
+                std::process::exit(code);
+            }
+            return;
+        }
+        if let Some(asn) = asn_m.get_one::<String>("asn") {
+            let path = format!("/v1/as/n/{}", asn);
+            if let Err(code) = http_get_simple(&server, use_json, &path).await {
+                std::process::exit(code);
+            }
+            return;
+        } else {
+            eprintln!("Missing AS number. Usage: iptoasn asn <AS123|123> or iptoasn asn subnets <AS123|123>");
+            std::process::exit(2);
+        }
+    }
+
+    // Otherwise, run original annotate mode
+    if let Err(code) = annotate_mode(&matches).await {
+        std::process::exit(code);
+    }
+}
+
+fn join_url(base: &str, path: &str) -> String {
+    let b = base.trim_end_matches('/');
+    let p = path.trim_start_matches('/');
+    format!("{}/{}", b, p)
+}
+
+fn print_with_trailing_newline(s: &str) {
+    if s.ends_with('\n') {
+        print!("{}", s);
+    } else {
+        println!("{}", s);
+    }
+}
+
+async fn http_lookup_ip(server: &str, use_json: bool, ip: Option<&str>) -> Result<(), i32> {
+    let client = reqwest::Client::new();
+    let accept = if use_json {
+        "application/json"
+    } else {
+        "text/plain"
+    };
+
+    let path = match ip {
+        Some(ip_s) => format!("/v1/as/ip/{}", ip_s),
+        None => "/v1/as/ip".to_string(),
+    };
+    let url = join_url(server, &path);
+    match client.get(&url).header(ACCEPT, accept).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                eprintln!("{}", body);
+                return Err(1);
+            }
+            print_with_trailing_newline(&body);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Request failed: {}", e);
+            Err(1)
+        }
+    }
+}
+
+async fn http_get_simple(server: &str, use_json: bool, path: &str) -> Result<(), i32> {
+    let client = reqwest::Client::new();
+    let accept = if use_json {
+        "application/json"
+    } else {
+        "text/plain"
+    };
+    let url = join_url(server, path);
+    match client.get(&url).header(ACCEPT, accept).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                eprintln!("{}", body);
+                return Err(1);
+            }
+            print_with_trailing_newline(&body);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Request failed: {}", e);
+            Err(1)
+        }
+    }
+}
+
+// Bulk IP PUT with auto-detected input content-type; output controlled by --json via Accept
+async fn http_bulk_ips(server: &str, use_json: bool, file: Option<&str>) -> Result<(), i32> {
+    let client = reqwest::Client::new();
+    let accept = if use_json {
+        "application/json"
+    } else {
+        "text/plain"
+    };
+    let url = join_url(server, "/v1/as/ips");
+
+    // Read input (file or stdin) as-is
+    let text = if let Some(path) = file {
+        match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to read file {}: {}", path, e);
+                return Err(2);
+            }
+        }
+    } else {
+        let mut s = String::new();
+        if let Err(e) = io::stdin().read_to_string(&mut s) {
+            eprintln!("Failed to read stdin: {}", e);
+            return Err(2);
+        }
+        s
+    };
+
+    // Auto-detect JSON input for this endpoint; otherwise send text/plain
+    let content_type = if text.trim_start().starts_with('[') {
+        "application/json"
+    } else {
+        "text/plain"
+    };
+
+    match client
+        .put(&url)
+        .header(ACCEPT, accept)
+        .header(CONTENT_TYPE, content_type)
+        .body(text)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                eprintln!("{}", body);
+                return Err(1);
+            }
+            print_with_trailing_newline(&body);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Request failed: {}", e);
+            Err(1)
+        }
+    }
+}
+
+async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
     let db_url = matches.get_one::<String>("db_url").unwrap();
     let include_description = matches.get_flag("description");
     let input_path = matches.get_one::<String>("input").map(String::as_str);
@@ -95,12 +341,12 @@ async fn main() {
                 "--as-markers must be exactly two characters, e.g., \"[]\" or \"<>\", got: {}",
                 as_markers
             );
-            std::process::exit(2);
+            return Err(2);
         }
     };
     let as_sep = matches.get_one::<String>("as_sep").unwrap();
 
-    // Create HTTP client once if URL is HTTP/HTTPS
+    // Create HTTP client once if URL is HTTP/HTTPS (for DB download)
     let http_client = if db_url.starts_with("http://") || db_url.starts_with("https://") {
         Some(reqwest::Client::new())
     } else {
@@ -113,7 +359,7 @@ async fn main() {
         Err(e) => {
             error!("Failed to load initial database: {e}");
             error!("Application cannot start without initial data");
-            std::process::exit(1);
+            return Err(1);
         }
     };
     let asns_arc = Arc::new(RwLock::new(asns));
@@ -125,7 +371,7 @@ async fn main() {
                 Ok(f) => f,
                 Err(e) => {
                     error!("Failed to open input file {}: {}", path, e);
-                    std::process::exit(1);
+                    return Err(1);
                 }
             };
             Box::new(BufReader::new(file))
@@ -138,7 +384,6 @@ async fn main() {
 
     // IPv6 matching that doesn't rely on \b and preserves delimiters.
     // Modified to ignore IPv6 addresses starting with ::ffff (IPv4-mapped IPv6).
-    // Those are left untouched here so that the IPv4 regex handles the embedded IPv4.
     let re_ipv6 = Regex::new(
         r"(?x)
           (?P<pre>^|[^0-9A-Fa-f:])
@@ -168,7 +413,7 @@ async fn main() {
             Ok(l) => l,
             Err(e) => {
                 error!("Failed to read line: {}", e);
-                std::process::exit(1);
+                return Err(1);
             }
         };
 
@@ -188,15 +433,13 @@ async fn main() {
             })
             .to_string();
 
-        // Replace IPv6 occurrences (preserving surrounding delimiters),
-        // but ignore IPv4-mapped IPv6 (::ffff:...)
+        // Replace IPv6 occurrences (preserving surrounding delimiters), ignore ::ffff:...
         line = re_ipv6
             .replace_all(&line, |caps: &regex::Captures| {
                 let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
                 let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
 
                 if let Some(skip) = caps.name("skip") {
-                    // Leave ::ffff:... as-is; IPv4 part already handled by IPv4 regex.
                     return format!("{}{}{}", pre, skip.as_str(), post);
                 }
 
@@ -220,14 +463,16 @@ async fn main() {
 
         if let Err(e) = writeln!(stdout, "{}", line) {
             error!("Failed to write output: {}", e);
-            std::process::exit(1);
+            return Err(1);
         }
     }
 
     if let Err(e) = stdout.flush() {
         error!("Failed to flush output: {}", e);
-        std::process::exit(1);
+        return Err(1);
     }
+
+    Ok(())
 }
 
 async fn get_asns(
