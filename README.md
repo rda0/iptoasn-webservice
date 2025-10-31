@@ -27,10 +27,12 @@ This is the source code of the (previously) public API from [iptoasn.com](https:
 cargo build --release
 ```
 
-To change the compile time default for the DB URL:
+To change the compile time defaults for the DB or server URL:
 
 ```sh
-IPTOASN_DB_URL="https://example.com/data/ip2asn-combined.tsv.gz" cargo build --release
+IPTOASN_DB_URL="https://example.com/data/ip2asn-combined.tsv.gz" \  # default URL to download DB (cli, webservice)
+IPTOASN_SERVER_URL="https://example.com" \                          # default URL to query the API (cli)
+cargo build --release
 ```
 
 ### Run the server
@@ -82,20 +84,62 @@ iptoasn -di /var/log/apache2/access.log
 8.8.8.8 [AS15169, US, GOOGLE] - - [27/Oct/2025:12:10:13 +0100] "GET /dns/root.hints HTTP/1.1" 500 3510 839 2729 "-" "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" TLSv1.3 TLS_AES_128_GCM_SHA256 Initial
 ```
 
+Subcommands can be used to query the webservice.
+
+Examples:
+
+```sh
+$ iptoasn ip 8.8.8.8
+15169 | 8.8.8.0-8.8.8.255 | US | GOOGLE
+$ iptoasn asn 15169
+15169 | US | GOOGLE
+$ echo -e '8.8.8.8\n8.8.4.4' | iptoasn ips
+15169    | 8.8.8.8              | GOOGLE, US
+15169    | 8.8.4.4              | GOOGLE, US
+$ echo '["8.8.8.8","8.8.4.4"]' | iptoasn ips
+15169    | 8.8.8.8              | GOOGLE, US
+15169    | 8.8.4.4              | GOOGLE, US
+$ echo -e '8.8.8.8\n8.8.4.4' > ip_list.txt
+$ iptoasn ips ip_list.txt
+15169    | 8.8.8.8              | GOOGLE, US
+15169    | 8.8.4.4              | GOOGLE, US
+$ echo '["8.8.8.8","8.8.4.4"]' > ip_list.json
+$ iptoasn ips ip_list.json
+15169    | 8.8.8.8              | GOOGLE, US
+15169    | 8.8.4.4              | GOOGLE, US
+$ iptoasn asn subnets 15169 | head -n2
+8.8.4.0/24
+8.8.8.0/24
+$ iptoasn asns | rg -S google | head -n2
+15169 | US | GOOGLE
+16550 | US | GOOGLE-PRIVATE-CLOUD
+$ iptoasn --json ip 8.8.8.8  # all subcommands support JSON output
+{"ip":"8.8.8.8","announced":true,"first_ip":"8.8.8.0","last_ip":"8.8.8.255","as_number":15169,"as_country_code":"US","as_description":"GOOGLE"}
+```
+
 Usage:
 
 ```sh
 cp target/release/iptoasn /usr/local/bin
 iptoasn -h
-Annotate IP addresses with ASN info
+Annotate IP addresses with ASN info using in-memory database. Subcommands query the iptoasn webservice
 
-Usage: iptoasn [OPTIONS]
+Usage: iptoasn [OPTIONS] [COMMAND]
+
+Commands:
+  ip    Lookup IP via webservice
+  ips   Bulk IP lookup via webservice; reads IPs from file or stdin. Input can be text/plain or JSON (auto-detected).
+  asn   AS number lookup via webservice, or subcommands
+  asns  List all AS numbers via webservice
+  help  Print this message or the help of the given subcommand(s)
 
 Options:
-  -u, --dburl <db_url>     URL of the database [env: IPTOASN_DB_URL=] [default: https://iptoasn.com/data/ip2asn-combined.tsv.gz]
-  -c, --cache-file <path>  Override path to cache file
-                           (default: $XDG_CACHE_HOME/iptoasn/ip2asn-combined.tsv.gz
-                           or ~/.cache/iptoasn/ip2asn-combined.tsv.gz)
+      --server <url>       Base URL of iptoasn webservice [env: IPTOASN_SERVER_URL=] [default:
+                           http://127.0.0.1:53661]
+  -j, --json               Use JSON format for output of subcommands (Accept: application/json)
+  -u, --dburl <db_url>     URL to download the in-memory database [env: IPTOASN_DB_URL=] [default:
+                           https://iptoasn.com/data/ip2asn-combined.tsv.gz]
+  -c, --cache-file <path>  Override path to cache file [env: $XDG_CACHE_HOME/iptoasn/] [default: ~/.cache/iptoasn/]
   -i, --input <path>       Path to input file (defaults to stdin)
   -d, --description        Include AS description in annotations
   -l, --line-buffered      Flush each output line immediately when reading from stdin
@@ -109,17 +153,17 @@ Options:
 
 ### Routes
 
-- `/v1/as/ip/<ip address>`
+- `GET /v1/as/ip/<ip address>`
   - Lookup provided IP address
-- `/v1/as/ip`
+- `GET /v1/as/ip`
   - Lookup requester's IP address, prioritized as X-Real-IP > X-Forwarded-For > Request IP
-- `/v1/as/ips`
+- `PUT /v1/as/ips`
   - Bulk lookup provided list of IP addresses
-- `/v1/as/n/<as number>`
+- `GET /v1/as/n/<as number>`
   - Lookup provided AS number
-- `/v1/as/ns`
+- `GET /v1/as/ns`
   - Returns all known AS numbers
-- `/v1/as/n/<as number>/subnets`
+- `GET /v1/as/n/<as number>/subnets`
   - Returns all known subnets of a given AS number
 
 ### JSON Response
