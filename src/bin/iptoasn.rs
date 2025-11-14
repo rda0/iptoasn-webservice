@@ -379,20 +379,24 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
         None => Box::new(BufReader::new(io::stdin())),
     };
 
-    // Precompile IP-matching regex
-    let re_ipv4 = Regex::new(r"\b(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\b").unwrap();
-
-    // IPv6 matching that doesn't rely on \b and preserves delimiters.
-    // Modified to ignore IPv6 addresses starting with ::ffff (IPv4-mapped IPv6).
-    let re_ipv6 = Regex::new(
+    // Combined IP regex:
+    //  - ip4: standard dotted IPv4
+    //  - mapped: the IPv4-mapped IPv6 prefix "::ffff:" (only the prefix; we leave the following IPv4
+    //            to be matched by the IPv4 branch later in the same pass)
+    //  - ip6: IPv6 token with custom boundaries (excluding "::ffff:..." by virtue of the 'mapped' alt)
+    let re_ip = Regex::new(
         r"(?x)
-          (?P<pre>^|[^0-9A-Fa-f:])
-          (?:
-              (?P<skip>::[Ff]{4}:[0-9A-Fa-f:.]+)           # IPv4-mapped (::ffff:...)
-            |
-              (?P<ip>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}|::)
-          )
-          (?P<post>[^0-9A-Fa-f:]|$)
+        # 1) IPv4 dotted-quad
+        \b (?P<ip4> (?:\d{1,3}\.){3}\d{1,3} ) \b
+        |
+        # 2) IPv4-mapped IPv6 prefix '::ffff:' (do not consume dotted-quad that follows)
+        (?P<pre_mapped> ^ | [^0-9A-Fa-f:] )
+        (?P<mapped> :: [Ff]{4} : )
+        |
+        # 3) IPv6 (preserve surrounding delimiters)
+        (?P<pre> ^ | [^0-9A-Fa-f:] )
+        (?P<ip6> (?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4} | :: )
+        (?P<post> [^0-9A-Fa-f:] | $ )
         ",
     )
     .unwrap();
@@ -409,7 +413,7 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
     let mut cache: HashMap<(String, bool), Option<String>> = HashMap::new();
 
     for line_res in reader.lines() {
-        let mut line = match line_res {
+        let line = match line_res {
             Ok(l) => l,
             Err(e) => {
                 error!("Failed to read line: {}", e);
@@ -417,47 +421,51 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
             }
         };
 
-        // Replace IPv4 occurrences
-        line = re_ipv4
+        // Single-pass replacement handling IPv4, IPv6, and IPv4-mapped IPv6 ::ffff: prefix
+        let line = re_ip
             .replace_all(&line, |caps: &regex::Captures| {
-                let ip_s = caps.name("ip").unwrap().as_str();
-                annotate_ip_token(
-                    ip_s,
-                    include_description,
-                    &asns_arc,
-                    &mut cache,
-                    &as_open,
-                    &as_close,
-                    as_sep,
-                )
-            })
-            .to_string();
-
-        // Replace IPv6 occurrences (preserving surrounding delimiters), ignore ::ffff:...
-        line = re_ipv6
-            .replace_all(&line, |caps: &regex::Captures| {
-                let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
-                let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
-
-                if let Some(skip) = caps.name("skip") {
-                    return format!("{}{}{}", pre, skip.as_str(), post);
-                }
-
-                let ip_s = caps.name("ip").unwrap().as_str();
-                format!(
-                    "{}{}{}",
-                    pre,
-                    annotate_ip_token(
-                        ip_s,
+                // IPv4
+                if let Some(m) = caps.name("ip4") {
+                    return annotate_ip_token(
+                        m.as_str(),
                         include_description,
                         &asns_arc,
                         &mut cache,
                         &as_open,
                         &as_close,
-                        as_sep
-                    ),
-                    post
-                )
+                        as_sep,
+                    );
+                }
+
+                // IPv4-mapped IPv6 prefix ::ffff: (return unchanged so that the following IPv4
+                // can be matched and annotated by the IPv4 branch in this same pass)
+                if let Some(m) = caps.name("mapped") {
+                    let pre = caps.name("pre_mapped").map(|m| m.as_str()).unwrap_or("");
+                    return format!("{}{}", pre, m.as_str());
+                }
+
+                // IPv6 (preserve pre/post)
+                if let Some(m) = caps.name("ip6") {
+                    let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
+                    let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
+                    return format!(
+                        "{}{}{}",
+                        pre,
+                        annotate_ip_token(
+                            m.as_str(),
+                            include_description,
+                            &asns_arc,
+                            &mut cache,
+                            &as_open,
+                            &as_close,
+                            as_sep
+                        ),
+                        post
+                    );
+                }
+
+                // Fallback: shouldn't happen, return original match
+                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
             })
             .to_string();
 
