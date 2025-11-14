@@ -78,8 +78,8 @@ The CLI tool can be used to annotate IP addresses in log files (i.e. webserver l
 Examples:
 
 ```sh
-tail -f /var/log/apache2/access.log | iptoasn -dl
-iptoasn -di /var/log/apache2/access.log
+tail -f /var/log/apache2/access.log | iptoasn -dfl
+iptoasn -dfi /var/log/apache2/access.log
 
 8.8.8.8 [AS15169, US, GOOGLE] - - [27/Oct/2025:12:10:13 +0100] "GET /dns/root.hints HTTP/1.1" 500 3510 839 2729 "-" "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" TLSv1.3 TLS_AES_128_GCM_SHA256 Initial
 ```
@@ -145,6 +145,8 @@ Options:
   -l, --line-buffered      Flush each output line immediately when reading from stdin
   -m, --as-markers <pair>  Two characters: opening and closing marker for AS info (e.g., [] or <>) [default: []]
   -s, --as-sep <str>       Delimiter between AS info fields [default: ", "]
+  -f, --first[=<n>]        Only replace first N IPs per line. -f alone sets N=1. To specify N, use -f=N or --first=N. If
+                           omitted, replace all
   -h, --help               Print help
   -V, --version            Print version
 ```

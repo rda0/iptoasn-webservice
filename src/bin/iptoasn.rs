@@ -140,6 +140,17 @@ async fn main() {
                 .help("Delimiter between AS info fields")
                 .default_value(", "),
         )
+        .arg(
+            Arg::new("first")
+                .short('f')
+                .long("first")
+                .value_name("n")
+                .help("Only replace first N IPs per line. -f alone sets N=1. To specify N, use -f=N or --first=N. If omitted, replace all")
+                .num_args(0..=1)
+                .require_equals(true)
+                .value_parser(clap::value_parser!(usize))
+                .default_missing_value("1"),
+        )
         .get_matches();
 
     let server = matches.get_one::<String>("server").unwrap().to_string();
@@ -331,6 +342,10 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
     let line_buffered = matches.get_flag("line_buffered");
     let cache_file: Option<PathBuf> = matches.get_one::<String>("cache_file").map(PathBuf::from);
 
+    // Parse --first/-f limit for replacen
+    // If not set, use 0. If set without value, defaults to 1. If provided with a value, use that value.
+    let limit: usize = matches.get_one::<usize>("first").copied().unwrap_or(0);
+
     // Parse AS markers (must be exactly two Unicode characters)
     let as_markers = matches.get_one::<String>("as_markers").unwrap();
     let mut chs = as_markers.chars();
@@ -423,7 +438,7 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
 
         // Single-pass replacement handling IPv4, IPv6, and IPv4-mapped IPv6 ::ffff: prefix
         let line = re_ip
-            .replace_all(&line, |caps: &regex::Captures| {
+            .replacen(&line, limit, |caps: &regex::Captures| {
                 // IPv4
                 if let Some(m) = caps.name("ip4") {
                     return annotate_ip_token(
