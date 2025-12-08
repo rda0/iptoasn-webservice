@@ -14,5 +14,5 @@ if [ $IPTOASN_PORT ] || [ $IPTOASN_DBURL ]; then
 
   exec /usr/bin/iptoasn-webservice --listen 0.0.0.0:"$IPTOASN_PORT" --dburl "$IPTOASN_DBURL"
 else
-  exec /usr/bin/iptoasn-webservice $@
+  exec /usr/bin/iptoasn-webservice "$@"
 fi
