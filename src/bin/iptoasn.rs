@@ -86,6 +86,26 @@ async fn main() {
                 ),
         )
         .subcommand(Command::new("asns").about("List all AS numbers via webservice"))
+        .subcommand(
+            Command::new("country")
+                .about("Country lookup via webservice, or subcommands")
+                .arg(
+                    Arg::new("cc")
+                        .value_name("country code")
+                        .help("2-letter country code (e.g., US)")
+                        .required(false),
+                )
+                .subcommand(
+                    Command::new("subnets")
+                        .about("List subnets of a country (deaggregated/merged)")
+                        .arg(
+                            Arg::new("cc")
+                                .value_name("country code")
+                                .help("2-letter country code (e.g., US)")
+                                .required(true),
+                        ),
+                ),
+        )
         // Original annotate-mode arguments (used when no HTTP subcommands are present)
         .arg(
             Arg::new("db_url")
@@ -194,6 +214,26 @@ async fn main() {
             return;
         } else {
             eprintln!("Missing AS number. Usage: iptoasn asn <AS123|123> or iptoasn asn subnets <AS123|123>");
+            std::process::exit(2);
+        }
+    }
+    if let Some(cc_m) = matches.subcommand_matches("country") {
+        if let Some(subnets_m) = cc_m.subcommand_matches("subnets") {
+            let cc = subnets_m.get_one::<String>("cc").unwrap();
+            let path = format!("/v1/as/country/{}/subnets", cc);
+            if let Err(code) = http_get_simple(&server, use_json, &path).await {
+                std::process::exit(code);
+            }
+            return;
+        }
+        if let Some(cc) = cc_m.get_one::<String>("cc") {
+            let path = format!("/v1/as/country/{}", cc);
+            if let Err(code) = http_get_simple(&server, use_json, &path).await {
+                std::process::exit(code);
+            }
+            return;
+        } else {
+            eprintln!("Missing country code. Usage: iptoasn country <CC> or iptoasn country subnets <CC>");
             std::process::exit(2);
         }
     }

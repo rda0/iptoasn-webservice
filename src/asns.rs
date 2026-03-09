@@ -346,4 +346,28 @@ impl Asns {
         v.sort_unstable_by_key(|x| x.0);
         v
     }
+
+    // Enumerate all ASNs for a given country code, sorted by AS number.
+    pub fn enumerate_asns_by_country(&self, country_code: &str) -> Vec<u32> {
+        let cc = country_code.trim();
+        let mut v: Vec<u32> = self
+            .asn_meta
+            .iter()
+            .filter_map(|(&n, (c, _))| if c.as_ref() == cc { Some(n) } else { None })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    // Collect all ranges for a given country code by scanning the in-memory set.
+    // No persistent memory overhead; O(N) per call.
+    pub fn collect_ranges_by_country(&self, country_code: &str) -> Vec<(IpAddr, IpAddr)> {
+        let cc = country_code.trim();
+        self.asns
+            .iter()
+            .filter(|a| a.country.as_ref() == cc && a.number > 0)
+            .map(|a| (a.first_ip, a.last_ip))
+            .collect()
+    }
 }

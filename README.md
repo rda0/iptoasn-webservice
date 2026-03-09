@@ -113,6 +113,12 @@ $ iptoasn asn subnets 15169 | head -n2
 $ iptoasn asns | rg -S google | head -n2
 15169 | US | GOOGLE
 16550 | US | GOOGLE-PRIVATE-CLOUD
+$ iptoasn country US | head -n2
+15169
+16550
+$ iptoasn country subnets US | head -n2
+8.8.4.0/24
+8.8.8.0/24
 $ iptoasn --json ip 8.8.8.8  # all subcommands support JSON output
 {"ip":"8.8.8.8","announced":true,"first_ip":"8.8.8.0","last_ip":"8.8.8.255","as_number":15169,"as_country_code":"US","as_description":"GOOGLE"}
 ```
@@ -127,11 +133,13 @@ Annotate IP addresses with ASN info using in-memory database. Subcommands query 
 Usage: iptoasn [OPTIONS] [COMMAND]
 
 Commands:
-  ip    Lookup IP via webservice
-  ips   Bulk IP lookup via webservice; reads IPs from file or stdin. Input can be text/plain or JSON (auto-detected).
-  asn   AS number lookup via webservice, or subcommands
-  asns  List all AS numbers via webservice
-  help  Print this message or the help of the given subcommand(s)
+  ip       Lookup IP via webservice
+  ips      Bulk IP lookup via webservice; reads IPs from file or stdin. Input can be text/plain or JSON
+           (auto-detected).
+  asn      AS number lookup via webservice, or subcommands
+  asns     List all AS numbers via webservice
+  country  Country lookup via webservice, or subcommands
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --server <url>       Base URL of iptoasn webservice [env: IPTOASN_SERVER_URL=] [default:
@@ -167,6 +175,10 @@ Options:
   - Returns all known AS numbers
 - `GET /v1/as/n/<as number>/subnets`
   - Returns all known subnets of a given AS number
+- `GET /v1/as/country/<country code>`
+  - Returns all known AS numbers of a given country
+- `GET /v1/as/country/<country code>/subnets`
+  - Returns all known subnets of a given country (merged into the largest possible CIDR blocks)
 
 ### JSON Response
 
@@ -344,6 +356,46 @@ because the subnets may contain multiple adjacent announced prefixes of the same
 
 The in BGP announced prefixes can be queried from the ripe database:
 https://stat.ripe.net/docs/data-api/api-endpoints/announced-prefixes
+
+### Country ASNs lookup
+
+Returns all AS numbers for a given 2-letter country code:
+
+```sh
+curl -H'Accept: application/json' http://localhost:53661/v1/as/country/US
+curl -H'Accept: text/plain' http://localhost:53661/v1/as/country/US
+xh http://localhost:53661/v1/as/country/US Accept:application/json
+xh http://localhost:53661/v1/as/country/US Accept:text/plain
+```
+
+### Country subnets lookup
+
+Returns all subnets for a given 2-letter country code. The service merges overlapping/adjacent ranges and re-aggregates them into the largest possible CIDR blocks:
+
+```sh
+curl -H'Accept: application/json' http://localhost:53661/v1/as/country/US/subnets
+xh http://localhost:53661/v1/as/country/US/subnets Accept:application/json
+
+{
+    "country_code": "US",
+    "subnets": [
+        "8.8.4.0/24",
+        "8.8.8.0/24",
+        ...
+    ]
+}
+```
+
+Or as plaintext:
+
+```sh
+curl -H'Accept: text/plain' http://localhost:53661/v1/as/country/US/subnets
+xh http://localhost:53661/v1/as/country/US/subnets Accept:text/plain
+
+8.8.4.0/24
+8.8.8.0/24
+...
+```
 
 ## Data Source
 

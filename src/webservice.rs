@@ -68,6 +68,18 @@ struct AsSubnetsResponse {
     subnets: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct CountryAsnsResponse {
+    country_code: String,
+    as_numbers: Vec<u32>,
+}
+
+#[derive(Serialize)]
+struct CountrySubnetsResponse {
+    country_code: String,
+    subnets: Vec<String>,
+}
+
 pub struct WebService;
 
 impl WebService {
@@ -118,6 +130,15 @@ impl WebService {
             (&Method::GET, path) if path.starts_with("/v1/as/n/") => {
                 let asn_s = path.strip_prefix("/v1/as/n/").unwrap_or("");
                 Self::as_meta_lookup(asn_s, req.headers(), asns_arc)
+            }
+            (&Method::GET, path) if path.starts_with("/v1/as/country/") && path.ends_with("/subnets") => {
+                let cc = path.strip_prefix("/v1/as/country/").unwrap_or("");
+                let cc = cc.strip_suffix("/subnets").unwrap_or(cc);
+                Self::country_subnets_lookup(cc, req.headers(), asns_arc)
+            }
+            (&Method::GET, path) if path.starts_with("/v1/as/country/") => {
+                let cc = path.strip_prefix("/v1/as/country/").unwrap_or("");
+                Self::country_asns_lookup(cc, req.headers(), asns_arc)
             }
             (&Method::PUT, "/v1/as/ips") => Self::handle_put_ips(req, asns_arc).await,
             _ => {
@@ -903,6 +924,321 @@ impl WebService {
         };
 
         Ok(response)
+    }
+
+    fn normalize_country_code(input: &str) -> Option<String> {
+        let cc = input.trim();
+        if cc.len() != 2 {
+            return None;
+        }
+        let cc_u = cc.to_ascii_uppercase();
+        if !cc_u.chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        Some(cc_u)
+    }
+
+    fn output_country_asns_json(resp: &CountryAsnsResponse) -> Response<Full<Bytes>> {
+        let json = serde_json::to_string(resp).unwrap();
+        let mut response = Response::new(Full::new(Bytes::from(json)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_country_asns_plain(as_numbers: &[u32]) -> Response<Full<Bytes>> {
+        let mut out = String::new();
+        for n in as_numbers {
+            out.push_str(&format!("{n}\n"));
+        }
+        let mut response = Response::new(Full::new(Bytes::from(out)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_country_asns_html(resp: &CountryAsnsResponse) -> Response<Full<Bytes>> {
+        let html = html! {
+            head {
+                title : "iptoasn country AS list";
+                meta(name="viewport", content="width=device-width, initial-scale=1");
+                link(rel="stylesheet", href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-alpha.5/css/bootstrap.min.css", integrity="sha384-AysaV+vQoT3kOAXZkl02PThvDr8HYKPZhNT5h/CXfBThSRXQ6jW5DO2ekP5ViFdi", crossorigin="anonymous");
+                style : "body { margin: 1em 4em }";
+            }
+            body(class="container-fluid") {
+                header {
+                    h1 : format_args!("ASNs for {}", resp.country_code);
+                }
+                @ if resp.as_numbers.is_empty() {
+                    p : "No ASNs found";
+                } else {
+                    ul {
+                        @ for n in &resp.as_numbers {
+                            li : format_args!("AS{}", n);
+                        }
+                    }
+                }
+                footer {
+                    p { small {
+                        : "Powered by ";
+                        a(href="https://iptoasn.com") : "iptoasn.com";
+                    } }
+                }
+            }
+        }
+        .into_string()
+        .unwrap();
+        let html = format!("<!DOCTYPE html>\n<html>{html}</html>");
+
+        let mut response = Response::new(Full::new(Bytes::from(html)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_country_subnets_json(resp: &CountrySubnetsResponse) -> Response<Full<Bytes>> {
+        let json = serde_json::to_string(resp).unwrap();
+        let mut response = Response::new(Full::new(Bytes::from(json)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_country_subnets_plain(subnets: &[String]) -> Response<Full<Bytes>> {
+        let mut out = String::new();
+        for s in subnets {
+            out.push_str(s);
+            out.push('\n');
+        }
+        let mut response = Response::new(Full::new(Bytes::from(out)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn output_country_subnets_html(resp: &CountrySubnetsResponse) -> Response<Full<Bytes>> {
+        let body_text = if resp.subnets.is_empty() {
+            String::new()
+        } else {
+            resp.subnets.join("\n")
+        };
+
+        let html = html! {
+            head {
+                title : "iptoasn country subnets";
+                meta(name="viewport", content="width=device-width, initial-scale=1");
+                link(rel="stylesheet", href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-alpha.5/css/bootstrap.min.css", integrity="sha384-AysaV+vQoT3kOAXZkl02PThvDr8HYKPZhNT5h/CXfBThSRXQ6jW5DO2ekP5ViFdi", crossorigin="anonymous");
+                style : "body { margin: 1em 4em }";
+            }
+            body(class="container-fluid") {
+                header {
+                    h1 : format_args!("Subnets for {}", resp.country_code);
+                }
+                pre : body_text;
+                footer {
+                    p { small {
+                        : "Powered by ";
+                        a(href="https://iptoasn.com") : "iptoasn.com";
+                    } }
+                }
+            }
+        }
+        .into_string()
+        .unwrap();
+        let html = format!("<!DOCTYPE html>\n<html>{html}</html>");
+
+        let mut response = Response::new(Full::new(Bytes::from(html)));
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        Self::cache_headers(response.headers_mut());
+        *response.status_mut() = StatusCode::OK;
+        response
+    }
+
+    fn country_asns_lookup(
+        cc_s: &str,
+        headers: &HeaderMap,
+        asns_arc: Arc<RwLock<Arc<Asns>>>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let output_type = Self::accept_type(headers);
+
+        let cc = match Self::normalize_country_code(cc_s) {
+            Some(x) => x,
+            None => {
+                let mut resp = match output_type {
+                    OutputType::Plain => Response::new(Full::new(Bytes::from(
+                        "Invalid country code. Use a 2-letter ISO code, e.g. US\n",
+                    ))),
+                    _ => Response::new(Full::new(Bytes::from(
+                        r#"{"error":"Invalid country code. Use a 2-letter ISO code, e.g. US"}"#,
+                    ))),
+                };
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static(match output_type {
+                        OutputType::Plain => "text/plain; charset=utf-8",
+                        _ => "application/json; charset=utf-8",
+                    }),
+                );
+                return Ok(resp);
+            }
+        };
+
+        let asns = asns_arc.read().unwrap().clone();
+        let list = asns.enumerate_asns_by_country(&cc);
+
+        let resp = CountryAsnsResponse {
+            country_code: cc,
+            as_numbers: list,
+        };
+
+        let response = match output_type {
+            OutputType::Plain => Self::output_country_asns_plain(&resp.as_numbers),
+            OutputType::Html => Self::output_country_asns_html(&resp),
+            _ => Self::output_country_asns_json(&resp),
+        };
+
+        Ok(response)
+    }
+
+    fn country_subnets_lookup(
+        cc_s: &str,
+        headers: &HeaderMap,
+        asns_arc: Arc<RwLock<Arc<Asns>>>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let output_type = Self::accept_type(headers);
+
+        let cc = match Self::normalize_country_code(cc_s) {
+            Some(x) => x,
+            None => {
+                let mut resp = match output_type {
+                    OutputType::Plain => Response::new(Full::new(Bytes::from(
+                        "Invalid country code. Use a 2-letter ISO code, e.g. US\n",
+                    ))),
+                    _ => Response::new(Full::new(Bytes::from(
+                        r#"{"error":"Invalid country code. Use a 2-letter ISO code, e.g. US"}"#,
+                    ))),
+                };
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static(match output_type {
+                        OutputType::Plain => "text/plain; charset=utf-8",
+                        _ => "application/json; charset=utf-8",
+                    }),
+                );
+                return Ok(resp);
+            }
+        };
+
+        let asns = asns_arc.read().unwrap().clone();
+        let ranges = asns.collect_ranges_by_country(&cc);
+
+        // Merge overlapping/adjacent ranges, then re-aggregate to largest CIDR blocks.
+        let mut v4: Vec<(u32, u32)> = Vec::new();
+        let mut v6: Vec<(u128, u128)> = Vec::new();
+
+        for (first, last) in ranges {
+            match (first, last) {
+                (IpAddr::V4(f), IpAddr::V4(l)) => v4.push((u32::from_be_bytes(f.octets()), u32::from_be_bytes(l.octets()))),
+                (IpAddr::V6(f), IpAddr::V6(l)) => v6.push((u128::from_be_bytes(f.octets()), u128::from_be_bytes(l.octets()))),
+                _ => {}
+            }
+        }
+
+        let mut subnets: Vec<String> = Vec::new();
+        for (s, e) in Self::merge_ranges_u32(&mut v4) {
+            let first = IpAddr::V4(Ipv4Addr::from(s.to_be_bytes()));
+            let last = IpAddr::V4(Ipv4Addr::from(e.to_be_bytes()));
+            let mut parts = Self::range_to_cidrs(&first.to_string(), &last.to_string());
+            subnets.append(&mut parts);
+        }
+        for (s, e) in Self::merge_ranges_u128(&mut v6) {
+            let first = IpAddr::V6(Ipv6Addr::from(s.to_be_bytes()));
+            let last = IpAddr::V6(Ipv6Addr::from(e.to_be_bytes()));
+            let mut parts = Self::range_to_cidrs(&first.to_string(), &last.to_string());
+            subnets.append(&mut parts);
+        }
+
+        let resp = CountrySubnetsResponse {
+            country_code: cc,
+            subnets,
+        };
+
+        let response = match output_type {
+            OutputType::Plain => Self::output_country_subnets_plain(&resp.subnets),
+            OutputType::Html => Self::output_country_subnets_html(&resp),
+            _ => Self::output_country_subnets_json(&resp),
+        };
+
+        Ok(response)
+    }
+
+    fn merge_ranges_u32(ranges: &mut Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+        if ranges.is_empty() {
+            return Vec::new();
+        }
+        ranges.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        let mut cur = ranges[0];
+
+        for &(s, e) in &ranges[1..] {
+            let adj = cur.1 != u32::MAX && s <= cur.1.saturating_add(1);
+            let ovl = s <= cur.1;
+            if ovl || adj {
+                cur.1 = cur.1.max(e);
+            } else {
+                out.push(cur);
+                cur = (s, e);
+            }
+        }
+        out.push(cur);
+        out
+    }
+
+    fn merge_ranges_u128(ranges: &mut Vec<(u128, u128)>) -> Vec<(u128, u128)> {
+        if ranges.is_empty() {
+            return Vec::new();
+        }
+        ranges.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut out: Vec<(u128, u128)> = Vec::new();
+        let mut cur = ranges[0];
+
+        for &(s, e) in &ranges[1..] {
+            let adj = cur.1 != u128::MAX && s <= cur.1.saturating_add(1);
+            let ovl = s <= cur.1;
+            if ovl || adj {
+                cur.1 = cur.1.max(e);
+            } else {
+                out.push(cur);
+                cur = (s, e);
+            }
+        }
+        out.push(cur);
+        out
     }
 
     // Deaggregate an arbitrary inclusive range into minimal CIDR set
