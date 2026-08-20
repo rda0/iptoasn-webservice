@@ -375,6 +375,135 @@ async fn http_bulk_ips(server: &str, use_json: bool, file: Option<&str>) -> Resu
     }
 }
 
+fn replace_ip_addresses(
+    line: &str,
+    re_ip: &Regex,
+    limit: usize,
+    include_description: bool,
+    asns_arc: &Arc<RwLock<Arc<Asns>>>,
+    cache: &mut HashMap<(String, bool), Option<String>>,
+    as_open: &str,
+    as_close: &str,
+    as_sep: &str,
+) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut last_end = 0;
+    let mut replaced = 0;
+
+    for caps in re_ip.captures_iter(line) {
+        let whole = caps.get(0).unwrap();
+
+        output.push_str(&line[last_end..whole.start()]);
+
+        let replacement = if let Some(ip4) = caps.name("ip4") {
+            let ip = ip4.as_str();
+
+            match IpAddr::from_str(ip) {
+                Ok(_) if limit == 0 || replaced < limit => {
+                    replaced += 1;
+
+                    annotate_ip_token(
+                        ip,
+                        include_description,
+                        asns_arc,
+                        cache,
+                        as_open,
+                        as_close,
+                        as_sep,
+                    )
+                }
+                _ => whole.as_str().to_owned(),
+            }
+        } else if let Some(mapped_ip4) = caps.name("mapped_ip4") {
+            let ip = mapped_ip4.as_str();
+
+            match IpAddr::from_str(ip) {
+                Ok(_) if limit == 0 || replaced < limit => {
+                    replaced += 1;
+
+                    let annotation = annotate_ip_token(
+                        ip,
+                        include_description,
+                        asns_arc,
+                        cache,
+                        as_open,
+                        as_close,
+                        as_sep,
+                    );
+
+                    let pre = caps
+                        .name("pre_mapped")
+                        .map(|m| m.as_str())
+                        .unwrap_or("");
+
+                    let mapped = caps
+                        .name("mapped")
+                        .map(|m| m.as_str())
+                        .unwrap_or("");
+
+                    let post = caps
+                        .name("mapped_post")
+                        .map(|m| m.as_str())
+                        .unwrap_or("");
+
+                    let mut result = String::with_capacity(
+                        pre.len() + mapped.len() + annotation.len() + post.len(),
+                    );
+                    result.push_str(pre);
+                    result.push_str(mapped);
+                    result.push_str(&annotation);
+                    result.push_str(post);
+                    result
+                }
+                _ => whole.as_str().to_owned(),
+            }
+        } else if let Some(ip6) = caps.name("ip6") {
+            let ip = ip6.as_str();
+
+            match IpAddr::from_str(ip) {
+                Ok(_) if limit == 0 || replaced < limit => {
+                    replaced += 1;
+
+                    let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
+                    let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
+                    let annotation = annotate_ip_token(
+                        ip,
+                        include_description,
+                        asns_arc,
+                        cache,
+                        as_open,
+                        as_close,
+                        as_sep,
+                    );
+
+                    let mut result =
+                        String::with_capacity(pre.len() + annotation.len() + post.len());
+                    result.push_str(pre);
+                    result.push_str(&annotation);
+                    result.push_str(post);
+                    result
+                }
+                _ => whole.as_str().to_owned(),
+            }
+        } else {
+            whole.as_str().to_owned()
+        };
+
+        output.push_str(&replacement);
+        last_end = whole.end();
+
+        // Critical speed fix:
+        // stop regex scanning immediately after requested replacements.
+        if limit > 0 && replaced >= limit {
+            output.push_str(&line[last_end..]);
+            return output;
+        }
+    }
+
+    output.push_str(&line[last_end..]);
+    output
+}
+
 async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
     let db_url = matches.get_one::<String>("db_url").unwrap();
     let include_description = matches.get_flag("description");
@@ -441,22 +570,30 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
     //  - ip6: IPv6 token with custom boundaries (excluding "::ffff:..." by virtue of the 'mapped' alt)
     let re_ip = Regex::new(
         r"(?x)
-        # 1) IPv4 dotted-quad
-        \b (?P<ip4> (?:\d{1,3}\.){3}\d{1,3} ) \b
-        |
-        # 2) IPv4-mapped IPv6 prefix '::ffff:' (do not consume dotted-quad that follows)
+        # IPv4-mapped IPv6. Match complete address, including delimiters.
         (?P<pre_mapped> ^ | [^0-9A-Fa-f:] )
         (?P<mapped> :: [Ff]{4} : )
+        (?P<mapped_ip4> (?:\d{1,3}\.){3}\d{1,3} )
+        (?P<mapped_post> [^0-9.] | $ )
+
         |
-        # 3) IPv6 (preserve surrounding delimiters)
+
+        # IPv4
+        \b (?P<ip4> (?:\d{1,3}\.){3}\d{1,3} ) \b
+
+        |
+
+        # IPv6
         (?P<pre> ^ | [^0-9A-Fa-f:] )
-        (?P<ip6> (?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4} | :: )
+        (?P<ip6>
+            (?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}
+            | ::
+        )
         (?P<post> [^0-9A-Fa-f:] | $ )
-        ",
+    ",
     )
     .unwrap();
 
-    // Choose output writer: line-buffered for stdin when requested, else buffered
     let stdout_raw = io::stdout();
     let mut stdout: Box<dyn Write> = if line_buffered && input_path.is_none() {
         Box::new(io::LineWriter::new(stdout_raw))
@@ -464,65 +601,28 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
         Box::new(io::BufWriter::new(stdout_raw))
     };
 
-    // Cache to avoid repeated lookups across the whole run
     let mut cache: HashMap<(String, bool), Option<String>> = HashMap::new();
 
     for line_res in reader.lines() {
         let line = match line_res {
-            Ok(l) => l,
+            Ok(line) => line,
             Err(e) => {
                 error!("Failed to read line: {}", e);
                 return Err(1);
             }
         };
 
-        // Single-pass replacement handling IPv4, IPv6, and IPv4-mapped IPv6 ::ffff: prefix
-        let line = re_ip
-            .replacen(&line, limit, |caps: &regex::Captures| {
-                // IPv4
-                if let Some(m) = caps.name("ip4") {
-                    return annotate_ip_token(
-                        m.as_str(),
-                        include_description,
-                        &asns_arc,
-                        &mut cache,
-                        &as_open,
-                        &as_close,
-                        as_sep,
-                    );
-                }
-
-                // IPv4-mapped IPv6 prefix ::ffff: (return unchanged so that the following IPv4
-                // can be matched and annotated by the IPv4 branch in this same pass)
-                if let Some(m) = caps.name("mapped") {
-                    let pre = caps.name("pre_mapped").map(|m| m.as_str()).unwrap_or("");
-                    return format!("{}{}", pre, m.as_str());
-                }
-
-                // IPv6 (preserve pre/post)
-                if let Some(m) = caps.name("ip6") {
-                    let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
-                    let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
-                    return format!(
-                        "{}{}{}",
-                        pre,
-                        annotate_ip_token(
-                            m.as_str(),
-                            include_description,
-                            &asns_arc,
-                            &mut cache,
-                            &as_open,
-                            &as_close,
-                            as_sep
-                        ),
-                        post
-                    );
-                }
-
-                // Fallback: shouldn't happen, return original match
-                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
-            })
-            .to_string();
+        let line = replace_ip_addresses(
+            &line,
+            &re_ip,
+            limit,
+            include_description,
+            &asns_arc,
+            &mut cache,
+            &as_open,
+            &as_close,
+            as_sep,
+        );
 
         if let Err(e) = writeln!(stdout, "{}", line) {
             error!("Failed to write output: {}", e);
