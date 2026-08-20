@@ -27,6 +27,9 @@ http = "1.4"
 mimalloc = "0.1"
 regex = "1.11"
 home = "0.5"
+chrono = "0.4"
+libc = "0.2"
+rayon = "1.11"
 
 [features]
 default = []
