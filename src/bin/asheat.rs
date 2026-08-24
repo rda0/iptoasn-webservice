@@ -40,7 +40,7 @@ Usage: {program} [OPTIONS]
 Read timestamped AS annotations from stdin and print terminal heatmap.
 
 Options:
-    -t, --threads N       Worker threads. Default: CPU core count.
+    -t, --threads N       Worker threads. Default: one quarter logical CPUs, capped at 8.
         --bins N          Time bins. Default: terminal graph width.
         --no-color         Use ASCII density instead 256-color heatmap.
         --all              Show all AS rows, beyond terminal height.
@@ -144,9 +144,12 @@ fn parse_args() -> Config {
     }
 
     if threads == 0 {
-        threads = std::thread::available_parallelism()
+        let logical = std::thread::available_parallelism()
             .map(|value| value.get())
             .unwrap_or(1);
+
+        let default_threads = (logical / 4).clamp(1, 8);
+        threads = default_threads;
     }
 
     Config {
