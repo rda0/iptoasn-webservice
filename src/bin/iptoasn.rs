@@ -9,7 +9,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -380,8 +380,8 @@ fn replace_ip_addresses(
     re_ip: &Regex,
     limit: usize,
     include_description: bool,
-    asns_arc: &Arc<RwLock<Arc<Asns>>>,
-    cache: &mut HashMap<(String, bool), Option<String>>,
+    asns: &Arc<Asns>,
+    cache: &mut HashMap<(IpAddr, bool), String>,
     as_open: &str,
     as_close: &str,
     as_sep: &str,
@@ -396,16 +396,17 @@ fn replace_ip_addresses(
         output.push_str(&line[last_end..whole.start()]);
 
         let replacement = if let Some(ip4) = caps.name("ip4") {
-            let ip = ip4.as_str();
+            let ip_text = ip4.as_str();
 
-            match IpAddr::from_str(ip) {
-                Ok(_) if limit == 0 || replaced < limit => {
+            match IpAddr::from_str(ip_text) {
+                Ok(ip) if limit == 0 || replaced < limit => {
                     replaced += 1;
 
                     annotate_ip_token(
+                        ip_text,
                         ip,
                         include_description,
-                        asns_arc,
+                        asns,
                         cache,
                         as_open,
                         as_close,
@@ -415,16 +416,17 @@ fn replace_ip_addresses(
                 _ => whole.as_str().to_owned(),
             }
         } else if let Some(mapped_ip4) = caps.name("mapped_ip4") {
-            let ip = mapped_ip4.as_str();
+            let ip_text = mapped_ip4.as_str();
 
-            match IpAddr::from_str(ip) {
-                Ok(_) if limit == 0 || replaced < limit => {
+            match IpAddr::from_str(ip_text) {
+                Ok(ip) if limit == 0 || replaced < limit => {
                     replaced += 1;
 
                     let annotation = annotate_ip_token(
+                        ip_text,
                         ip,
                         include_description,
-                        asns_arc,
+                        asns,
                         cache,
                         as_open,
                         as_close,
@@ -458,18 +460,20 @@ fn replace_ip_addresses(
                 _ => whole.as_str().to_owned(),
             }
         } else if let Some(ip6) = caps.name("ip6") {
-            let ip = ip6.as_str();
+            let ip_text = ip6.as_str();
 
-            match IpAddr::from_str(ip) {
-                Ok(_) if limit == 0 || replaced < limit => {
+            match IpAddr::from_str(ip_text) {
+                Ok(ip) if limit == 0 || replaced < limit => {
                     replaced += 1;
 
                     let pre = caps.name("pre").map(|m| m.as_str()).unwrap_or("");
                     let post = caps.name("post").map(|m| m.as_str()).unwrap_or("");
+
                     let annotation = annotate_ip_token(
+                        ip_text,
                         ip,
                         include_description,
-                        asns_arc,
+                        asns,
                         cache,
                         as_open,
                         as_close,
@@ -546,7 +550,6 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
             return Err(1);
         }
     };
-    let asns_arc = Arc::new(RwLock::new(asns));
 
     // Prepare input reader (file or stdin)
     let reader: Box<dyn BufRead> = match input_path {
@@ -601,7 +604,7 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
         Box::new(io::BufWriter::new(stdout_raw))
     };
 
-    let mut cache: HashMap<(String, bool), Option<String>> = HashMap::new();
+    let mut cache: HashMap<(IpAddr, bool), String> = HashMap::new();
 
     for line_res in reader.lines() {
         let line = match line_res {
@@ -617,7 +620,7 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
             &re_ip,
             limit,
             include_description,
-            &asns_arc,
+            &asns,
             &mut cache,
             &as_open,
             &as_close,
@@ -652,64 +655,71 @@ async fn get_asns(
 }
 
 fn annotate_ip_token(
-    ip_s: &str,
+    ip_text: &str,
+    ip: IpAddr,
     include_description: bool,
-    asns_arc: &Arc<RwLock<Arc<Asns>>>,
-    cache: &mut HashMap<(String, bool), Option<String>>,
+    asns: &Arc<Asns>,
+    cache: &mut HashMap<(IpAddr, bool), String>,
     as_open: &str,
     as_close: &str,
     as_sep: &str,
 ) -> String {
-    if let Some(cached) = cache.get(&(ip_s.to_string(), include_description)) {
-        return match cached {
-            Some(ann) => ann.clone(),
-            None => ip_s.to_string(),
-        };
+    if let Some(cached) = cache.get(&(ip, include_description)) {
+        return cached.clone();
     }
 
-    let ip = match IpAddr::from_str(ip_s) {
-        Ok(ip) => ip,
-        Err(_) => {
-            // Not a valid IP token; leave unchanged
-            cache.insert((ip_s.to_string(), include_description), None);
-            return ip_s.to_string();
-        }
-    };
-
-    let asns = asns_arc.read().unwrap().clone();
-
     let annot = if let Some(found) = asns.lookup_by_ip(ip) {
-        let mut s = String::new();
-        s.push_str(ip_s);
+        let mut s = String::with_capacity(
+            ip_text.len()
+                + as_open.len()
+                + as_close.len()
+                + as_sep.len() * if include_description { 2 } else { 1 }
+                + found.country.len()
+                + found.description.len()
+                + 8,
+        );
+
+        s.push_str(ip_text);
         s.push(' ');
         s.push_str(as_open);
         s.push_str("AS");
         s.push_str(&found.number.to_string());
         s.push_str(as_sep);
         s.push_str(&found.country);
+
         if include_description {
             s.push_str(as_sep);
             s.push_str(&found.description);
         }
+
         s.push_str(as_close);
         s
     } else {
         // No ASN found (local/private or unrouted)
-        let mut s = String::new();
-        s.push_str(ip_s);
+        let mut s = String::with_capacity(
+            ip_text.len()
+                + as_open.len()
+                + as_close.len()
+                + as_sep.len()
+                + 20,
+        );
+
+        s.push_str(ip_text);
         s.push(' ');
         s.push_str(as_open);
         s.push_str("AS0");
         s.push_str(as_sep);
         s.push_str("None");
+
         if include_description {
             s.push_str(as_sep);
             s.push_str("Not announced");
         }
+
         s.push_str(as_close);
         s
     };
 
-    cache.insert((ip_s.to_string(), include_description), Some(annot.clone()));
+    cache.insert((ip, include_description), annot.clone());
     annot
 }
