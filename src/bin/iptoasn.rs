@@ -10,6 +10,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use rayon::prelude::*;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -21,6 +22,9 @@ const DEFAULT_SERVER_URL: &str = match option_env!("IPTOASN_SERVER_URL") {
     Some(url) => url,
     None => "http://127.0.0.1:53661",
 };
+
+const BATCH_SIZE: usize = 4096;
+const LINES_PER_CHUNK: usize = 64;
 
 #[tokio::main]
 async fn main() {
@@ -170,6 +174,14 @@ async fn main() {
                 .require_equals(true)
                 .value_parser(clap::value_parser!(usize))
                 .default_missing_value("1"),
+        )
+        .arg(
+            Arg::new("threads")
+                .short('t')
+                .long("threads")
+                .value_name("N")
+                .help("Worker thread count. Default: one quarter logical CPUs, capped at 8")
+                .value_parser(clap::value_parser!(usize)),
         )
         .get_matches();
 
@@ -604,32 +616,131 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
         Box::new(io::BufWriter::new(stdout_raw))
     };
 
-    let mut cache: HashMap<(IpAddr, bool), String> = HashMap::new();
+    let requested_threads = match matches.get_one::<usize>("threads").copied() {
+        Some(0) => {
+            error!("--threads must be greater than zero");
+            return Err(2);
+        }
+        value => value,
+    };
 
-    for line_res in reader.lines() {
-        let line = match line_res {
-            Ok(line) => line,
-            Err(e) => {
-                error!("Failed to read line: {}", e);
+    // Line-buffered mode prioritizes latency and immediate output.
+    // Keep processing strictly serial in this mode.
+    if line_buffered {
+        let mut cache: HashMap<(IpAddr, bool), String> = HashMap::new();
+
+        for line_res in reader.lines() {
+            let line = match line_res {
+                Ok(line) => line,
+                Err(e) => {
+                    error!("Failed to read line: {}", e);
+                    return Err(1);
+                }
+            };
+
+            let line = replace_ip_addresses(
+                &line,
+                &re_ip,
+                limit,
+                include_description,
+                &asns,
+                &mut cache,
+                &as_open,
+                &as_close,
+                as_sep,
+            );
+
+            if let Err(e) = writeln!(stdout, "{}", line) {
+                error!("Failed to write output: {}", e);
                 return Err(1);
             }
-        };
 
-        let line = replace_ip_addresses(
-            &line,
-            &re_ip,
-            limit,
-            include_description,
-            &asns,
-            &mut cache,
-            &as_open,
-            &as_close,
-            as_sep,
-        );
+            // Explicit flush guarantees immediate output.
+            if let Err(e) = stdout.flush() {
+                error!("Failed to flush output: {}", e);
+                return Err(1);
+            }
+        }
 
-        if let Err(e) = writeln!(stdout, "{}", line) {
-            error!("Failed to write output: {}", e);
-            return Err(1);
+        return Ok(());
+    }
+
+    let logical = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+
+    let default_threads = (logical / 4).clamp(1, 8);
+    let thread_count = requested_threads.unwrap_or(default_threads);
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build()
+        .map_err(|e| {
+            error!("Failed to create worker pool: {}", e);
+            1
+        })?;
+
+    info!(
+        "Offline annotation using {} worker threads, batch size {}, chunk size {}",
+        thread_count, BATCH_SIZE, LINES_PER_CHUNK
+    );
+
+    let mut lines = reader.lines();
+
+    loop {
+        let mut batch = Vec::with_capacity(BATCH_SIZE);
+
+        for _ in 0..BATCH_SIZE {
+            match lines.next() {
+                Some(Ok(line)) => batch.push(line),
+                Some(Err(e)) => {
+                    error!("Failed to read line: {}", e);
+                    return Err(1);
+                }
+                None => break,
+            }
+        }
+
+        if batch.is_empty() {
+            break;
+        }
+
+        // par_chunks keeps complete lines together.
+        // Rayon collect preserves indexed input order.
+        // Each chunk gets its own cache, avoiding lock contention.
+        let processed_chunks: Vec<Vec<String>> = pool.install(|| {
+            batch
+                .par_chunks(LINES_PER_CHUNK)
+                .map(|chunk| {
+                    let mut cache: HashMap<(IpAddr, bool), String> = HashMap::new();
+
+                    chunk
+                        .iter()
+                        .map(|line| {
+                            replace_ip_addresses(
+                                line,
+                                &re_ip,
+                                limit,
+                                include_description,
+                                &asns,
+                                &mut cache,
+                                &as_open,
+                                &as_close,
+                                as_sep,
+                            )
+                        })
+                        .collect()
+                })
+                .collect()
+        });
+
+        for chunk in processed_chunks {
+            for line in chunk {
+                if let Err(e) = writeln!(stdout, "{}", line) {
+                    error!("Failed to write output: {}", e);
+                    return Err(1);
+                }
+            }
         }
     }
 
