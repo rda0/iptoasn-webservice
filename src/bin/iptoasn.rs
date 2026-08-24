@@ -525,11 +525,15 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
     let include_description = matches.get_flag("description");
     let input_path = matches.get_one::<String>("input").map(String::as_str);
     let line_buffered = matches.get_flag("line_buffered");
-    let cache_file: Option<PathBuf> = matches.get_one::<String>("cache_file").map(PathBuf::from);
+    let cache_file: Option<PathBuf> =
+        matches.get_one::<String>("cache_file").map(PathBuf::from);
 
     // Parse --first/-f limit for replacen
     // If not set, use 0. If set without value, defaults to 1. If provided with a value, use that value.
-    let limit: usize = matches.get_one::<usize>("first").copied().unwrap_or(0);
+    let limit: usize = matches
+        .get_one::<usize>("first")
+        .copied()
+        .unwrap_or(0);
 
     // Parse AS markers (must be exactly two Unicode characters)
     let as_markers = matches.get_one::<String>("as_markers").unwrap();
@@ -624,6 +628,13 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
         value => value,
     };
 
+    let logical = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+
+    let default_threads = (logical / 4).clamp(1, 8);
+    let thread_count = requested_threads.unwrap_or(default_threads);
+
     // Line-buffered mode prioritizes latency and immediate output.
     // Keep processing strictly serial in this mode.
     if line_buffered {
@@ -665,12 +676,50 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
         return Ok(());
     }
 
-    let logical = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1);
+    info!(
+        "Offline annotation using {} worker threads, batch size {}, chunk size {}",
+        thread_count, BATCH_SIZE, LINES_PER_CHUNK
+    );
 
-    let default_threads = (logical / 4).clamp(1, 8);
-    let thread_count = requested_threads.unwrap_or(default_threads);
+    // One-thread mode keeps one cache for the complete input.
+    // Avoid batching and Rayon overhead when parallelism is disabled.
+    if thread_count == 1 {
+        let mut cache: HashMap<(IpAddr, bool), String> = HashMap::new();
+
+        for line_res in reader.lines() {
+            let line = match line_res {
+                Ok(line) => line,
+                Err(e) => {
+                    error!("Failed to read line: {}", e);
+                    return Err(1);
+                }
+            };
+
+            let line = replace_ip_addresses(
+                &line,
+                &re_ip,
+                limit,
+                include_description,
+                &asns,
+                &mut cache,
+                &as_open,
+                &as_close,
+                as_sep,
+            );
+
+            if let Err(e) = writeln!(stdout, "{}", line) {
+                error!("Failed to write output: {}", e);
+                return Err(1);
+            }
+        }
+
+        if let Err(e) = stdout.flush() {
+            error!("Failed to flush output: {}", e);
+            return Err(1);
+        }
+
+        return Ok(());
+    }
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(thread_count)
@@ -679,11 +728,6 @@ async fn annotate_mode(matches: &clap::ArgMatches) -> Result<(), i32> {
             error!("Failed to create worker pool: {}", e);
             1
         })?;
-
-    info!(
-        "Offline annotation using {} worker threads, batch size {}, chunk size {}",
-        thread_count, BATCH_SIZE, LINES_PER_CHUNK
-    );
 
     let mut lines = reader.lines();
 
