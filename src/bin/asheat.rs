@@ -28,6 +28,7 @@ const FLAME: [(f64, (u8, u8, u8)); 9] = [
 struct Config {
     no_color: bool,
     show_all: bool,
+    country: bool,
     bins: usize,
     threads: usize,
 }
@@ -41,6 +42,7 @@ Read timestamped AS annotations from stdin and print terminal heatmap.
 
 Options:
     -t, --threads N       Worker threads. Default: one quarter logical CPUs, capped at 8.
+    -c, --country         Aggregate heatmap rows by country code.
         --bins N          Time bins. Default: terminal graph width.
         --no-color         Use ASCII density instead 256-color heatmap.
         --all              Show all AS rows, beyond terminal height.
@@ -49,6 +51,7 @@ Options:
 Examples:
     cat input.log | {program}
     cat input.log | {program} --all
+    cat input.log | {program} --country
     cat input.log | {program} -t 8 --bins 200
 "
     );
@@ -63,6 +66,7 @@ fn parse_args() -> Config {
 
     let mut no_color = false;
     let mut show_all = false;
+    let mut country = false;
     let mut bins = 0usize;
     let mut threads = 0usize;
     let mut index = 1;
@@ -80,6 +84,10 @@ fn parse_args() -> Config {
 
             "--all" => {
                 show_all = true;
+            }
+
+            "-c" | "--country" => {
+                country = true;
             }
 
             "--bins" => {
@@ -155,6 +163,7 @@ fn parse_args() -> Config {
     Config {
         no_color,
         show_all,
+        country,
         bins,
         threads: threads.max(1),
     }
@@ -214,7 +223,7 @@ fn parse_timestamp(captures: &regex::Captures<'_>) -> Option<f64> {
     None
 }
 
-fn parse_as_annotations(line: &[u8]) -> Vec<Key> {
+fn parse_as_annotations(line: &[u8], country_mode: bool) -> Vec<Key> {
     let mut result = Vec::new();
     let mut position = 0;
 
@@ -259,20 +268,40 @@ fn parse_as_annotations(line: &[u8]) -> Vec<Key> {
 
         let description_end = description_start + end_offset;
 
-        let description = String::from_utf8_lossy(
+        let annotation_text = String::from_utf8_lossy(
             &line[description_start..description_end],
-        )
-        .trim()
-        .to_owned();
-
-        let duplicate = result.iter().any(
-            |(old_asn, old_description)| {
-                *old_asn == asn && *old_description == description
-            },
         );
 
+        let description_text = annotation_text.trim();
+
+        let label = if country_mode {
+            description_text
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_uppercase()
+        } else {
+            description_text.to_owned()
+        };
+
+        if label.is_empty() {
+            position = description_end + 1;
+            continue;
+        }
+
+        let duplicate = result
+            .iter()
+            .any(|(old_asn, old_label)| {
+                *old_asn == asn && *old_label == label
+            });
+
         if !duplicate {
-            result.push((asn, description));
+            result.push(if country_mode {
+                (0, label)
+            } else {
+                (asn, label)
+            });
         }
 
         position = description_end + 1;
@@ -284,11 +313,12 @@ fn parse_as_annotations(line: &[u8]) -> Vec<Key> {
 fn parse_line(
     line: &str,
     date_re: &Regex,
+    country_mode: bool,
 ) -> Option<Event> {
     let captures = date_re.captures(line)?;
 
     let timestamp = parse_timestamp(&captures)?;
-    let annotations = parse_as_annotations(line.as_bytes());
+    let annotations = parse_as_annotations(line.as_bytes(), country_mode);
 
     if annotations.is_empty() {
         None
@@ -474,8 +504,12 @@ fn format_duration(seconds: f64) -> String {
     }
 }
 
-fn fit_label(asn: u32, description: &str) -> String {
-    let mut label = format!("AS{} {}", asn, description);
+fn fit_label(asn: u32, description: &str, country_mode: bool) -> String {
+    let mut label = if country_mode {
+        description.to_owned()
+    } else {
+        format!("AS{} {}", asn, description)
+    };
 
     if label.chars().count() > 40 {
         label = label.chars().take(39).collect();
@@ -572,7 +606,7 @@ fn main() {
 
     let events: Vec<Event> = lines
         .par_iter()
-        .filter_map(|line| parse_line(line, &date_re))
+        .filter_map(|line| parse_line(line, &date_re, config.country))
         .collect();
 
     if events.is_empty() {
@@ -677,7 +711,8 @@ fn main() {
         .unwrap_or(1);
 
     let title = format!(
-        "AS heatmap  events={}  range={}-{}",
+        "{} heatmap  events={}  range={}-{}",
+        if config.country { "Country" } else { "AS" },
         events.len(),
         format_time(start, span),
         format_time(end, span),
@@ -724,7 +759,7 @@ fn main() {
 
     if config.no_color {
         for key in &ordered {
-            output.push_str(&fit_label(key.0, &key.1));
+            output.push_str(&fit_label(key.0, &key.1, config.country));
             output.push(' ');
 
             for column in 0..graph_width {
@@ -755,7 +790,7 @@ fn main() {
         }
 
         for key in &ordered {
-            output.push_str(&fit_label(key.0, &key.1));
+            output.push_str(&fit_label(key.0, &key.1, config.country));
             output.push(' ');
 
             for column in 0..graph_width {
