@@ -171,7 +171,7 @@ fn parse_args() -> Config {
 
 fn build_date_regex() -> Regex {
     Regex::new(
-        r"(?P<iso>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))|(?P<apache>\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}(?: [+-]\d{4})?)|(?P<syslog>[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})",
+        r"(?P<iso>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))|(?P<apache>\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}(?: [+-]\d{4})?)|(?P<syslog>[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})|(?P<fail2ban>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?)",
     )
     .unwrap()
 }
@@ -218,6 +218,26 @@ fn parse_timestamp(captures: &regex::Captures<'_>) -> Option<f64> {
 
             return Some(local.timestamp_millis() as f64 / 1000.0);
         }
+    }
+
+    if let Some(value) = captures.name("fail2ban") {
+        let value = value.as_str();
+
+        let time = NaiveDateTime::parse_from_str(
+            value,
+            "%Y-%m-%d %H:%M:%S,%f",
+        )
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(
+                value,
+                "%Y-%m-%d %H:%M:%S",
+            )
+        })
+        .ok()?;
+
+        let local = Local.from_local_datetime(&time).single()?;
+
+        return Some(local.timestamp_millis() as f64 / 1000.0);
     }
 
     None
